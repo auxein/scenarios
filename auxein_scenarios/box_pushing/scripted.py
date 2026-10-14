@@ -78,11 +78,12 @@ def go_to(x: Array | float, y: Array | float) -> Controller:
     return control
 
 
-def push(goal_x: Array | None = None, goal_y: Array | None = None, *, spacing: float = 0.05, lead: float = 3.0) -> Controller:
+def push(goal_x: Array | None = None, goal_y: Array | None = None, *, spacing: float = 0.0, lead: float = 3.0) -> Controller:
     """The naive push team: lines behind the box, then a straight push toward the goal (the layout's target by default).
 
     The goal direction `g` runs from the box's centre to the goal. Agent `i` is assigned a **column**, a line parallel to `g`
-    across the box's back face (`i mod columns`, with as many columns as fit across the box's longer side). An agent behind the
+    across the box's back face (`i mod columns`, with as many columns as fit across the box's longer side, agents `spacing` apart:
+    with the defaults, 4 across the 2-unit side, the `k` the default friction needs). An agent behind the
     box and on its line pushes: it drives at full thrust toward a point `lead` units ahead on its line, which keeps it on the
     line as the box moves and turns. Agents of one column queue on the line and push through the ones in front. Any other agent
     goes to the head of its line, around the box if the box is in its way. Lines follow the box, so a box pushed off-centre that
