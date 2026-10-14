@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 classifiers = ["Private :: Do Not Upload"]
 dependencies = ["auxein", "numpy>=1.26", "array-api-compat>=1.9"]
 
+[project.scripts]
+box-pushing = "auxein_scenarios.box_pushing.cli:main"
+
 [project.optional-dependencies]
 # torch is named directly, not only through auxein's extra, because uv applies `[tool.uv.sources]` (the CPU-only index below)
 # to direct dependencies only

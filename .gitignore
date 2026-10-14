@@ -224,3 +224,6 @@ runs/
 # Rendered videos, except the curated ones in media/
 *.mp4
 !media/**/*.mp4
+
+# Demo clips, galleries and other local renders
+out/
