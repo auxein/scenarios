@@ -30,8 +30,7 @@ from auxein_scenarios.box_pushing.world import initial_state, step
 
 def _sync(backend: Backend) -> None:
     if backend.name == "torch" and backend.device != "cpu":
-        import torch
-
+        torch = importlib.import_module("torch")  # optional: imported by name, so the numpy-only install type-checks
         getattr(torch, backend.device.split(":")[0]).synchronize()
 
 
@@ -72,8 +71,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     machine = f"{platform.machine()} {platform.system()} {platform.release()}"
     print(f"machine: {machine}, python {platform.python_version()}, numpy {np.__version__}")
     if importlib.util.find_spec("torch") is not None:
-        import torch
-
+        torch = importlib.import_module("torch")
         print(f"torch {torch.__version__}, {torch.get_num_threads()} CPU threads")
     n, s, steps = args.candidates, args.scenarios, params.simulation.max_steps
     print(f"\n{n} candidates × {s} scenarios, {params.simulation.substeps} substeps per step; a generation is {steps} steps\n")
