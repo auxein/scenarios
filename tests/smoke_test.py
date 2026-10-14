@@ -14,11 +14,11 @@ from auxein.backend import Backend
 from auxein.environments import MLPPolicy
 from auxein.random import RandomStream
 
-AUXEIN_TAG = "v0.3.1"
+AUXEIN_TAG = "v0.3.2"
 AUXEIN_COMMIT = "56367961094d464d89ee81f4351a0fe789324020"
 # AUXEIN-WORKAROUND: 2026-10-14 "v0.3.1 reports version 0.3.0" (docs/auxein-issues.md). The tag's pyproject.toml still says
-# 0.3.0, so the installed package does too; the tag and commit checks below are what pin the release. Set this to "0.3.1"
-# (or the new tag's version) once a tag with a correct version is in use.
+# 0.3.0, so the installed package does too, and v0.3.2 is tagged on the same commit; the tag and commit checks below are what
+# pin the release. Set this to the tag's version once a tag on a commit with a correct version is in use.
 AUXEIN_REPORTED_VERSION = "0.3.0"
 
 OBSERVATION_SIZE = 43  # target 3 + rays 12 × 2 + box cue 6 + teammate sectors 8 + proprioception 2
