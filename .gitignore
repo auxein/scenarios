@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Scenario runs: Auxein recordings, checkpoints and renders live in run directories, never in git
+runs/
+# Rendered videos, except the curated ones in media/
+*.mp4
+!media/**/*.mp4
