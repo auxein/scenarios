@@ -49,7 +49,7 @@ found and fixed.** Every milestone follows this protocol.
 5. **Log it** in [`docs/auxein-issues.md`](docs/auxein-issues.md): date, symptom, minimal reproduction, the Auxein branch or PR,
    status (open / fixed in PR / released in tag), workaround if any.
 6. **Tell the owner whether a new tag is needed.** At the end of every session's report, a section **"Auxein: new tag needed?"**
-   with either "no" or: which Auxein PRs must be merged, the suggested tag (`v0.3.2` for fixes, a minor version for new
+   with either "no" or: which Auxein PRs must be merged, the suggested tag (the next patch version for fixes, a minor version for new
    features), and what the scenario will change once it's tagged (the `tag =` line, removing workarounds). The owner merges and
    tags; Claude Code never does.
 7. **Missing features aren't bugs.** If Auxein lacks something generic that the scenario needs, don't implement it in Auxein on

@@ -35,9 +35,7 @@ Each entry has this format:
 - **Auxein branch / PR:** none. The fix is a version bump (and the changelog heading), which only the owner makes; a new tag is
   needed for it to reach this repository. A CI check in Auxein that a tag matches `pyproject.toml` would prevent a repeat (a
   feature request for the owner to decide).
-- **Status:** open. The tag `v0.3.2` (2026-10-14) was created on the same commit as `v0.3.1` (`5636796`), not on the release
-  commit: "Version 0.3.2" (`7fdff4c`, merged to `master` as `d63e9c7`) sets `version = "0.3.2"`, but installed from the tag
-  Auxein still reports `0.3.0`. The scenarios depend on `v0.3.2` (the same code as `v0.3.1`), with the workaround kept, until a
-  tag points at a commit whose version is correct.
-- **Workaround:** `tests/smoke_test.py` (`AUXEIN_REPORTED_VERSION = "0.3.0"`, with `AUXEIN_TAG = "v0.3.2"`); the same test pins the tag and the commit through
-  the installed package's PEP 610 metadata, which is the real check. Remove it once a tag with a correct version is in use.
+- **Status:** released in tag `v0.3.2`. The tag was first created on the `v0.3.1` commit (`5636796`), so it still reported
+  `0.3.0`; on 2026-10-14 it was moved to the release commit `d63e9c7` ("Version 0.3.2"), which reports `0.3.2`.
+- **Workaround:** removed on 2026-10-14, when the scenarios moved to `v0.3.2` at `d63e9c7`; `tests/smoke_test.py` now checks
+  the version (`0.3.2`) as well as the tag and the commit.

@@ -22,8 +22,8 @@ wheels = [
 
 [[package]]
 name = "auxein"
-version = "0.3.0"
-source = { git = "https://github.com/auxein/auxein?tag=v0.3.2#56367961094d464d89ee81f4351a0fe789324020" }
+version = "0.3.2"
+source = { git = "https://github.com/auxein/auxein?tag=v0.3.2#d63e9c77942a912b9243dddfeeff29411da48a93" }
 dependencies = [
     { name = "array-api-compat" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },

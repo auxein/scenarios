@@ -296,7 +296,7 @@ Auxein records every evaluated genome and every episode's measurements. A genome
 
 ### 10.5 What reading Auxein turned up
 
-- **`v0.3.1` reports itself as version `0.3.0`, and so does `v0.3.2`.** The `v0.3.1` tag's `pyproject.toml` was not bumped (and its `CHANGELOG.md` still lists the release under "Unreleased"), so `auxein.__version__` is `"0.3.0"` when installed from the tag; `v0.3.2` was tagged on the same commit rather than on the release commit that bumps the version, so it reports `0.3.0` too. Logged in `docs/auxein-issues.md`; the smoke test pins the tag and commit instead (PEP 610 metadata) and carries an `AUXEIN-WORKAROUND`. Fixing it is a version change, which only the owner makes.
+- **`v0.3.1` reported itself as version `0.3.0`** (fixed in `v0.3.2`). The `v0.3.1` tag's `pyproject.toml` was not bumped, so `auxein.__version__` was `"0.3.0"` when installed from it. Logged in `docs/auxein-issues.md`; the scenarios now depend on `v0.3.2`, and the smoke test checks the tag, the commit (PEP 610 metadata) and the version.
 - **Auxein's test fixtures are not installed with it** (`tests/support/` is outside the wheel), so the minimal reproductions the protocol asks for are written in a clone of Auxein, not here.
 - **Held-out evaluation during a run** (the early stop, §6) calls `evaluate_held_out` on a run directory that the driver is still writing. Whether that is supported (it reads the recording while the writer holds `writer.lock`; `write=False` avoids `held_out.json`) is to be checked at M2; if not, it is a request to Auxein, and the fallback is to stop on the **training** success rate with `stop_when` (cheap, reproducible, but not the unseen-scenarios claim).
 
