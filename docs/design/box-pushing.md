@@ -1,6 +1,6 @@
 # Cooperative box-pushing: design
 
-**Status:** Draft for review · **Date:** 2026-10-14 · **Auxein:** `v0.3.2` · **Milestone:** M0 (design and scaffold)
+**Status:** Draft for review · **Date:** 2026-10-14 · **Auxein:** `v0.3.2` · **Milestone:** M1a (physics, scenario generator, viewer)
 
 ---
 
@@ -16,7 +16,7 @@
 
 **Box-pushing specifics stay in this repository.** Anything generic that turns out to be missing from Auxein is described as a request to Auxein, separately, and never built here on the side (`CLAUDE.md`, "Working on Auxein from this repository").
 
-**Numbers in this document are starting defaults**, all configurable and expected to be tuned once the world runs (M1) and the first runs are in (M2). A default marked *(proposed)* is not one of the decisions this design was given: it was needed to make the document coherent and is listed in §10.6 for review.
+**Numbers in this document are starting defaults**, all configurable and expected to be tuned once the world runs (M1) and the first runs are in (M2). Details this design needed beyond the decisions it was first given were marked *(proposed)* and listed in §10.6; most were decided at M1a, and the ones still open (fitness details for M2, CMA-ES for M4) keep the marker.
 
 ---
 
@@ -24,18 +24,18 @@
 
 ### 2.1 Why its own physics
 
-**The world is its own vectorised 2-D physics, implemented as an Auxein `BatchedEnvironment`.** One `run_batch` call simulates every candidate of a batch on every scenario of the set, and every agent of every team, at once: arrays shaped `(n, s, ...)` (candidates, scenarios) and `(n, s, N, ...)` (agents), with **no Python loops over candidates, scenarios or agents**; the only Python loop is over time steps.
+**The world is its own vectorised 2-D physics, wrapped as an Auxein `BatchedEnvironment`** (M1b) around a pure physics core (M1a, §2.10). One `run_batch` call simulates every candidate of a batch on every scenario of the set, and every agent of every team, at once: arrays shaped `(n, s, ...)` (candidates, scenarios) and `(n, s, N, ...)` (agents), with **no Python loops over candidates, scenarios or agents**; the only Python loop is over time steps.
 
 - **Why not an existing engine.** A general physics engine (Box2D, pymunk, MuJoCo) steps one world at a time from Python, so a generation of 100 candidates × 32 scenarios would be 3,200 worlds stepped in a loop. Batched GPU engines exist but bring their own array library, while Auxein's numeric layer is the Array API standard on numpy and torch (core design §7). A small, purpose-built model written against the same namespace runs where the genomes already are, with no host round trip (the pattern of Auxein's team fixture, `tests/support/team.py`).
 - **Array API, as Auxein.** The code uses the namespace of its inputs (`array-api-compat`): numpy or torch, float64 or float32, CPU, CUDA or Metal. It follows Auxein's rules for numeric code (core design §7.2): no in-place mutation (so updates are `xp.where`, never masked assignment), no global random state, arrays stay on their device, and everything works in float32, the only precision Metal has.
 - **Deterministic.** For a given scenario seed, backend, precision and device, an episode gives the same numbers every time. Contacts and sensing are written as **dense pairwise arrays reduced with sums**, never as scatters (`index_add`), whose order on a GPU is not fixed. The scope is Auxein's (core design §8): float32 results are not portable between CPU architectures or between a CPU and a GPU.
-- **Integration.** A fixed time step `dt` and semi-implicit (symplectic) Euler: velocities are updated from forces first, then positions from the new velocities. It is the cheapest integrator that is stable for the stiff springs of penalty contacts (§2.6). *(proposed)* The policy acts once per episode step, `dt = 0.05` s, and the physics runs `substeps = 2` steps of `dt / substeps` per episode step, so that contact stiffness and the control rate can be tuned apart.
+- **Integration.** A fixed time step `dt` and semi-implicit (symplectic) Euler: velocities are updated from forces first, then positions from the new velocities. It is the cheapest integrator that is stable for the stiff springs of penalty contacts (§2.6). The policy acts once per episode step, `dt = 0.05` s, and the physics runs `substeps = 2` steps of `h = dt / substeps = 0.025` s per episode step, so that contact stiffness and the control rate can be tuned apart. The velocity-proportional terms (the agents' drag and lateral damping, the turning lag, the box's angular damping) are applied **implicitly** (`v / (1 + c h)`), which is stable at any rate, so only the contact springs bound the substep.
 
 ### 2.2 Arena and obstacles
 
 - **The arena** is a walled square, 20 × 20 units by default, with the origin at its centre.
-- **Obstacles are random per scenario**: a few circles and axis-aligned rectangles (by default 2 to 6 in all at full difficulty, §4.2). *(proposed)* Circle radii 0.5 to 1.5 units; rectangle sides 0.5 to 4 units, so no obstacle is thinner than an agent's diameter.
-- **Validity, with rejection.** A layout is accepted only if the free space is connected and the box can reach the target; otherwise it is redrawn from the same scenario stream. *(proposed)* The check rasterises the arena on a grid of 0.25 units, inflates the obstacles and walls by the **box's circumscribed radius** (half its diagonal, so the check holds whatever the box's orientation) and flood-fills from the box's cell to the target's; a second flood fill, with obstacles inflated by an agent's radius, checks that every agent's spawn point is connected to the box. This is conservative (it may reject a layout the box could cross by turning), which is the safe side. Generation happens once per scenario set, on the host, so it is plain numpy and may loop.
+- **Obstacles are random per scenario**: a few circles and axis-aligned rectangles (by default 2 to 6 in all at full difficulty, §4.2). Circle radii 0.5 to 1.5 units; rectangle sides 0.5 to 4 units, so no obstacle is thinner than an agent's diameter.
+- **Validity, with rejection.** A layout is accepted only if the free space is connected and the box can reach the target; otherwise it is redrawn from the same scenario stream. The check rasterises the arena on a grid of 0.25 units, inflates the obstacles and walls by the **box's circumscribed radius** (half its diagonal, so the check holds whatever the box's orientation) and flood-fills from the box's cell to the target's; a second flood fill, with obstacles inflated by an agent's radius, checks that every agent's spawn point is connected to the box (and no agent overlaps an obstacle, the box, a wall or another agent). New obstacles also keep clear of the box's starting footprint and of the target zone. This is conservative (it may reject a layout the box could cross by turning), which is the safe side. Generation happens once per scenario set, on the host, so it is plain numpy and may loop; a scenario records in `attempts` how many draws it took (most take one; dense difficulties take several).
 
 ### 2.3 The box
 
@@ -47,20 +47,23 @@
 
 The box rests on the floor with **static friction**, so it moves only when the combined push exceeds a threshold, and the threshold is set so that it **needs at least `k` agents pushing together** (`k = 4` by default). One agent alone cannot move it; neither can `k − 1`.
 
-- **The threshold from `k`.** With `F_a` an agent's maximum thrust, the static threshold is set between what `k − 1` and `k` agents can push: *(proposed)* `F_s = (k − 0.5) · F_a`. Four agents pushing exactly in line produce `4 F_a`, enough with a margin of `0.5 F_a`; they move the box as long as each push is within about 29° of the direction they move it in (`4 cos 29° ≈ 3.5`). This margin is a lever: smaller makes cooperation stricter and the first generations' search harder.
-- **At rest.** While the box is at rest, it stays at rest as long as the net horizontal force on it is below `F_s` **and** the net torque below `τ_s`; *(proposed)* `τ_s = F_s · ρ`, with `ρ` a friction radius of the order of the box's size (`ρ = (w + h) / 6` by default, about the mean distance of the box's footprint from its centre). Treating force and torque with two separate thresholds is a simplification of a real friction limit surface, chosen because it is two comparisons on arrays.
-- **Moving.** Once moving, **kinetic friction** opposes the velocity with a constant magnitude `F_k = μ · F_s` (`μ = 0.8` by default *(proposed)*, so that a moving box is a little easier to keep moving, as with real friction), and **angular damping** opposes rotation. The box comes to rest again when its speed and angular speed both fall below small thresholds.
+- **The threshold from `k`.** With `F_a` an agent's maximum thrust, the static threshold is set between what `k − 1` and `k` agents can push: `F_s = (k − 0.5) · F_a` (7 with the defaults, `F_a = 2`). Four agents pushing exactly in line produce `4 F_a`, enough with a margin of `0.5 F_a`; they move the box as long as each push is within about 29° of the direction they move it in (`4 cos 29° ≈ 3.5`). This margin is a lever: smaller makes cooperation stricter and the first generations' search harder.
+- **At rest.** While the box is at rest, it stays at rest as long as the net horizontal force on it is below `F_s` **and** the net torque below `τ_s`; `τ_s = F_s · ρ`, with `ρ` a friction radius of the order of the box's size (`ρ = (w + h) / 6` by default, about the mean distance of the box's footprint from its centre). Treating force and torque with two separate thresholds is a simplification of a real friction limit surface, chosen because it is two comparisons on arrays.
+- **Moving.** Once moving, **kinetic friction** opposes the velocity with a constant magnitude `F_k = μ · F_s`, a **kinetic torque** `τ_k = μ · τ_s` opposes the spin, and **angular damping** (rate 2/s) slows it further. Each substep removes `F_k h / M` from the speed and `τ_k h / I` from the spin, clamped at zero so that friction never reverses a motion. The box comes to rest again when its speed and spin are both below small thresholds (0.01) and the push no longer exceeds the static thresholds.
+- **`μ = 0.9`, changed at M1a from the 0.8 first proposed.** Kinetic friction must exceed what `k − 1` agents can push, `μ (k − 0.5) > k − 1`, or a team that got the box moving once (with an impact, or a `k`th agent that then leaves) would need one agent fewer from then on. With `k = 4` that needs `μ > 0.857`; 0.8 failed it. `WorldParams` refuses a `μ` that fails it, with the value needed (for `k = 6`, `μ > 0.909`).
+- **The kinetic torque, added at M1a.** The first design had only viscous angular damping on a moving box. The threshold demo showed the problem: once the first contact's jolt (below) had set the box moving, `k − 1` agents pushing slightly off-centre kept it turning, and drifting, indefinitely, since any torque however small sustains a spin against viscous damping alone. A Coulomb torque, like the force, makes a small torque stop it.
 - **Agents pushing agents.** Contact forces pass through agents, so a line of agents pushing each other into the box adds up like agents pushing it side by side. This is allowed: it is cooperation too.
+- **Impacts.** Static friction holds against forces, not impulses: an agent hitting the box at full speed briefly exceeds `F_s` (the contact spring peaks at about `√(k_c m) v ≈ 19`), and the box slides a little, then stops. `k − 1` agents starting in contact jolt it about 1 cm as their springs overshoot (damping ratio 0.3), then hold it. §10.2 notes what evolution might make of impacts.
 
 ### 2.5 Agents
 
 - **Discs** of radius 0.25 by default, mass `m` (1 by default).
-- **Differential drive.** Each agent has a heading; its actions are a **forward thrust** (a force along the heading, negative for reverse, *(proposed)* reverse limited to half the forward thrust) and a **turning rate**. Linear and angular drag, and maximum speeds. *(proposed)* The commanded turning rate is reached through a first-order lag (angular drag), and the velocity across the heading is damped strongly, as wheels resist sliding sideways; contacts can still push an agent sideways.
+- **Differential drive.** Each agent has a heading; its actions are a **forward thrust** (a force along the heading, at most `F_a = 2`; negative for reverse, limited to half the forward thrust) and a **turning rate** (at most `ω_max = π` rad/s). Linear and angular drag, and maximum speeds: the maximum speed (1.5 units/s) sets the linear drag `F_a / v_max`, so it is the terminal speed under full thrust. The commanded turning rate is reached through a first-order lag (time constant 0.1 s), and the velocity across the heading is damped strongly (rate 20/s), as wheels resist sliding sideways; contacts can still push an agent sideways.
 - **Scaling.** Actions arrive in `[-1, 1]` (§3.6) and are scaled to the agent's limits: thrust to `[-F_a / 2, F_a]` and turning to `[-ω_max, ω_max]`.
 
 ### 2.6 Collisions: penalty contacts
 
-Agents collide with each other, with walls, with obstacles and with the box; the box collides with walls and obstacles. **Contacts are penalty-based**: an overlap `δ > 0` between two bodies produces a spring–damper force `f = k_c δ + c_c δ̇` along the contact normal (only pushing, never pulling), applied at the contact point, so it creates torque on the box. Penalty contacts are chosen **because they vectorise cleanly**: every pair is an independent formula evaluated on arrays, with no constraint solver and no data-dependent iteration. *(proposed)* Contacts are frictionless (agents slide along walls and along the box): friction between agents and the box is a possible later refinement.
+Agents collide with each other, with walls, with obstacles and with the box; the box collides with walls and obstacles. **Contacts are penalty-based**: an overlap `δ > 0` between two bodies produces a spring–damper force `f = k_c δ + c_c δ̇` along the contact normal (only pushing, never pulling), applied at the contact point, so it creates torque on the box. Penalty contacts are chosen **because they vectorise cleanly**: every pair is an independent formula evaluated on arrays, with no constraint solver and no data-dependent iteration. Contacts are frictionless (agents slide along walls and along the box): friction between agents and the box is a possible later refinement. A consequence seen in the demos: an agent pushes the box only along the face's normal, so a push at an angle to a face loses its tangential part and the agent slides off along the face.
 
 The contact pairs:
 
@@ -73,27 +76,43 @@ The contact pairs:
 | oriented box–axis-aligned rectangle | box–rectangular obstacle | **the hardest one** |
 | everything–wall | agents and the box against the four walls | half-planes; the box by its four corners |
 
-- **The rotating box against rectangles** is the hardest pair: two rectangles at an angle meet corner-to-edge or edge-to-edge. *(proposed)* It is computed as corner penetration both ways: the box's four corners against the obstacle (in the obstacle's frame) and the obstacle's four corners against the box (in the box's frame), each penetrating corner contributing a spring force along the face it is closest to. It is a separating-axis-like approximation, exact for the corner–edge contacts that dominate and good enough for the rare edge-to-edge ones (two corners penetrate). §10.2 lists its risks.
-- **Stiffness against the time step.** A penalty contact is a spring: stiffer means less overlap but needs a smaller step to stay stable (for semi-implicit Euler, `ω dt < 2` with `ω = √(k_c / m)`, and comfortably below for accuracy). The stiffness is chosen so that the overlap at full push stays small against the agent's radius (a few hundredths of a unit), and the substep from it.
-- **No tunnelling.** At maximum speed an agent moves much less than its radius in one substep (for example 1.5 units/s × 0.025 s ≈ 0.04 units against 0.25), and walls are half-planes, so nothing passes through a wall; a test checks it at maximum speed (M1).
+- **The rotating box against rectangles** is the hardest pair: two rectangles at an angle meet corner-to-edge or edge-to-edge. It is computed as corner penetration both ways: the box's four corners against the obstacle (in the obstacle's frame) and the obstacle's four corners against the box (in the box's frame), each penetrating corner contributing a spring force along the face it is closest to. It is a separating-axis-like approximation, exact for the corner–edge contacts that dominate and good enough for the rare edge-to-edge ones (two corners penetrate). Where the corners overlap each other (the box's corner inside the obstacle and the obstacle's inside the box) both count, so that contact is twice as stiff; a test pins it. A crossing with no corner inside either body is missed, but it can only be reached through a corner contact first, which the stiff box contact resists. §10.2 lists its risks.
+- **Stiffness against the time step.** A penalty contact is a spring: stiffer means less overlap but needs a smaller step to stay stable (for semi-implicit Euler, `ω dt < 2` with `ω = √(k_c / m)`, and comfortably below for accuracy). The stiffness is chosen so that the overlap at full push stays small against the agent's radius (a few hundredths of a unit), and the substep from it. **Tuned at M1a:**
+  - agents: `k_c = 200` (an agent at full thrust overlaps 0.01 units);
+  - **the box against walls and obstacles: `k_box = 2000`**, a separate stiffness added at M1a. The box is four times heavier than an agent and a crowd pushes it, so with the agents' stiffness 20 agents would press it 0.2 units into an obstacle and a large crowd could push its corner past the middle of a thin one; ten times stiffer, the same frequency for a mass four times larger;
+  - **damping as a ratio of critical damping, `ζ = 0.3`**, per contact type from its reduced mass (an agent pair `m/2`, agent–box `m M / (m + M)`), so that all contacts lose about the same fraction of energy per bounce;
+  - `WorldParams` computes `ω h` for each contact type (agent–agent, agent–wall, agent–box, box–wall) and refuses a combination above 1, half the stability bound of 2, which leaves room for crowds where a body feels several springs at once. The defaults give 0.56 (box–wall).
+- **No tunnelling.** At maximum speed an agent moves much less than its radius in one substep (for example 1.5 units/s × 0.025 s ≈ 0.04 units against 0.25), and walls are half-planes, so nothing passes through a wall; tests check it at maximum speed, for walls and for the thinnest obstacle (M1a).
 
 ### 2.7 Cost: agent pairs grow as agents²
 
-Agent–agent contacts and teammate sensing (§3.5) are computed for all pairs, `(n, s, N, N)` arrays. This is fine at 20–40 agents; at 100 agents the pairs are 10,000 per world, and **the torch path on Metal is expected**. A spatial grid (agents binned into cells, pairs only between neighbouring cells) could replace the dense pairs later if needed; it is not in v1, because sorting and binning are where the Array API is weakest and determinism on a GPU is hardest. §10.3 estimates the cost.
+Agent–agent contacts and teammate sensing (§3.5) are computed for all pairs, `(n, s, N, N)` arrays. This is fine at 20–40 agents; at 100 agents the pairs are 10,000 per world, and **the torch path on Metal is expected**. A spatial grid (agents binned into cells, pairs only between neighbouring cells) could replace the dense pairs later if needed; it is not in v1, because sorting and binning are where the Array API is weakest and determinism on a GPU is hardest. §10.3 has the measured cost (M1a).
 
 ### 2.8 Episodes in the batch
 
-Episodes end early on delivery (§4.4), but a batched world cannot drop a scenario from its arrays. **Finished scenarios keep their array shape but stop changing and scoring**: a `done` mask of shape `(n, s)` freezes their state through `xp.where`, and their measurements are kept from the step they finished. The batch stops early only when every scenario of every candidate is done. Frozen scenarios still cost compute, which is the price of no Python loops.
+Episodes end early on delivery (§4.4), but a batched world cannot drop a scenario from its arrays. **Finished scenarios keep their array shape but stop changing and scoring**: a `done` mask of shape `(n, s)` freezes their state through `xp.where`, and their measurements are kept from the step they finished. The batch stops early only when every scenario of every candidate is done (`simulate` checks it once per step, one host read). Frozen scenarios still cost compute, which is the price of no Python loops. The state's `steps` counter stops on delivery, so it is the delivery step (M2's `steps` measurement).
 
 ### 2.9 What `run_batch` returns, and rendering
 
-`run_batch(agents, scenarios, rng)` returns an `EpisodeBatchResult` of **raw measurements** (§5.2), each an `(n, s)` array on the backend, as Auxein's environments do: the score is the aggregator's (§5.1). For rendering (§7), the same simulation can be run for one genome on a few scenarios with a hook that records the states at every step (positions, headings, the box's pose); one code path serves training and rendering, so the clips show what was scored.
+`run_batch(agents, scenarios, rng)` returns an `EpisodeBatchResult` of **raw measurements** (§5.2), each an `(n, s)` array on the backend, as Auxein's environments do: the score is the aggregator's (§5.1). For rendering (§7), the same simulation can be run for one genome on a few scenarios with a hook that records the states at every step (positions, headings, the box's pose); one code path serves training and rendering, so the clips show what was scored. Built at M1a: `simulate(..., hook=TrajectoryRecorder(), every=k)` copies the state to host numpy arrays every `k`th step, and the renderer draws the resulting `Trajectory`.
+
+### 2.10 The physics core as built (M1a)
+
+M1a builds the physics as a pure, batched core in `world.py`, separate from Auxein's environment interface, which M1b wraps around it (`run_batch`, sensing, measurements):
+
+- **`Layout`**: what a scenario fixes for the episode (obstacles, target, starting poses) as `(1, s, ...)` arrays, which broadcast over the candidates without a copy. **Obstacles are padded** to a fixed number of circle and rectangle slots per batch, with validity masks, so layouts with different numbers of obstacles share arrays. Contacts with obstacles are accumulated **slot by slot** (a loop over the few slots, never over candidates, scenarios or agents), so a padded slot adds an exact zero after the real ones: a scenario gives the same numbers, to the last bit, whether padded to 6 or to 10 slots. `scenarios.layout_arrays` builds it from scenarios' params.
+- **`State`**: the agents' positions, velocities, headings and turning rates `(n, s, N)`; the box's pose, velocity, spin and at-rest flag `(n, s)`; the `done` mask and the `steps` counter.
+- **`step(state, actions, layout, params) -> State`**: actions `(n, s, N, 2)` in `[-1, 1]` (clipped), applied for `substeps` substeps (thrust and contact forces, the box's friction, implicit damping, integration), then delivery detection and the freeze of done scenarios through `where`.
+- **`simulate(state, layout, params, controller, steps, hook=None, every=1)`**: the runner for tests, demos and rendering; a controller maps the state to actions.
+- **`WorldParams`** (`config.py`): every parameter with these defaults, the derived quantities (`F_s`, `τ_s`, `F_k`, `τ_k`, the inertia, the drag, the contact damping) computed in one place, the checks above, and `to_dict` / `from_dict` for JSON. The TOML training config (M2) will build it.
+- **Scripted controllers** (`scripted.py`) drive the core from the true state for tests and demos: `idle`, `constant`, `go_to` and `push` (agents queue in columns behind the box's far side from a goal and push toward it; naive, it ignores obstacles). With 20 agents it delivers the box within the 600-step limit in 10 of 16 easy scenarios and 5 of 16 full ones (seed 1), the rest ending 1 to 4 units short (§10.2).
+- **The checks it passes** (`tests/box_pushing/world_test.py`, on numpy float64 and torch float32): `k − 1` agents leave the box at rest and `k` move it, for `k` = 2, 3 and 4; `k − 1` agents cannot keep a moving box moving; an off-centre push turns the box the right way and a centred one does not turn it; no agent passes through a wall at full speed, and neither agents nor the box pass through a 0.5-thick obstacle; with thrust, drag and damping off, collisions conserve momentum and never add kinetic energy; 100 agents crowding the box with random actions for 2,000 steps stay finite in float32 (numpy and torch); delivery freezes its scenario while the others go on; trajectories are identical run to run, identical whether a scenario runs alone or in a batch (bit for bit on numpy, within 1e-3 on torch float32) and whatever the obstacle padding.
 
 ---
 
 ## 3. Agents: sensing and acting
 
-**All sensing is local and in the agent's own frame** (bearings relative to its heading), **except the target**, which every agent knows. *(proposed)* Every input is normalised to roughly `[-1, 1]` or `[0, 1]`, since the network's initial weights assume inputs of unit scale (`MLPPolicy.space`, core design §6.2).
+**All sensing is local and in the agent's own frame** (bearings relative to its heading), **except the target**, which every agent knows. Every input is normalised to roughly `[-1, 1]` or `[0, 1]`, since the network's initial weights assume inputs of unit scale (`MLPPolicy.space`, core design §6.2).
 
 ### 3.1 Target (3 values)
 
@@ -101,20 +120,20 @@ Distance to the target (normalised by the arena's diagonal) and bearing to it as
 
 ### 3.2 Range rays (12 × 2 = 24 values)
 
-12 rays evenly spaced around the agent (by default), each cast to a maximum range (*(proposed)* the sensing range `r`, §3.3) and returning:
+12 rays evenly spaced around the agent (by default), each cast to a maximum range (the sensing range `r`, §3.3) and returning:
 
 - the **normalised distance** to the nearest wall, obstacle or box along the ray (1 when nothing is within range);
-- **what it hit**: *(proposed)* 1 for the box, 0 for a wall or an obstacle (and for nothing).
+- **what it hit**: 1 for the box, 0 for a wall or an obstacle (and for nothing).
 
-*(proposed)* Rays do not see teammates; teammates are sensed through sector densities (§3.4), so that a crowd around an agent does not blind it to the box.
+Rays do not see teammates; teammates are sensed through sector densities (§3.4), so that a crowd around an agent does not blind it to the box.
 
 ### 3.3 Box cue in range (6 values)
 
-Within the sensing range `r` (5 units by default): a **flag** that the box is in range (1), the **distance** to the box's centre (normalised by `r`), the **bearing** to it `(sin, cos)`, and the **box's heading relative to the agent's** `(sin, cos)`. Beyond `r`, all six are 0 and the flag is off. The box is also visible to rays beyond `r` only if the ray range is longer; with both at `r`, an agent farther than `r` from the box knows nothing of it (§10.1).
+Within the sensing range `r` (5 units by default): a **flag** that the box is in range (1), the **distance** to the box's centre (normalised by `r`), the **bearing** to it `(sin, cos)`, and the **box's heading relative to the agent's** as `(sin 2θ, cos 2θ)`. The doubled angle because the box is symmetric under a half turn: `θ` and `θ + π` are the same situation, and `(sin θ, cos θ)` would give them different inputs that the network would have to learn to treat alike (decided at M1a, §10.6). Beyond `r`, all six are 0 and the flag is off. The box is also visible to rays beyond `r` only if the ray range is longer; with both at `r`, an agent farther than `r` from the box knows nothing of it (§10.1).
 
 ### 3.4 Teammates: sector densities (8 values)
 
-The space around the agent is divided into 8 sectors (by default); each value is the **closeness-weighted count** of teammates in that sector within the sensing range: *(proposed)* `Σ (1 − d / r)` over the teammates at distance `d < r`. The size is **fixed whatever the team size**, so the same brain works for 20 or 100 agents. §10.6 notes that the values themselves grow with the team's density.
+The space around the agent is divided into 8 sectors (by default); each value is the **closeness-weighted count** of teammates in that sector within the sensing range, `x = Σ (1 − d / r)` over the teammates at distance `d < r`, **squashed** to `1 − e^(−x)`. The size is **fixed whatever the team size**, and the squashing keeps the values in `[0, 1)` however dense the team, so the same brain sees inputs of the same range with 20 or 100 agents (decided at M1a, §10.6): one teammate close by gives about 0.6, a crowd saturates toward 1.
 
 ### 3.5 Proprioception (2 values)
 
@@ -134,8 +153,8 @@ The agent's own forward speed and turning rate, each normalised by its maximum.
 |---|---|
 | target: distance, bearing (sin, cos) | 3 |
 | range rays: 12 × (distance, hit the box) | 24 |
-| box cue: flag, distance, bearing (sin, cos), relative heading (sin, cos) | 6 |
-| teammates: 8 sector densities | 8 |
+| box cue: flag, distance, bearing (sin, cos), relative heading (sin 2θ, cos 2θ) | 6 |
+| teammates: 8 sector densities, squashed | 8 |
 | proprioception: forward speed, turning rate | 2 |
 | **observation size** | **43** |
 
@@ -149,7 +168,7 @@ With one hidden layer of 32 units and 2 outputs, the genome is `43 × 32 + 32` (
 
 A scenario is drawn from a seed: the **obstacle layout**, the **box's position and orientation**, the **target position** (at least a minimum distance from the box), and the **agents' starting positions and headings, scattered across the arena**, free of obstacles (and of each other). It is an Auxein `Scenario` in a `ScenarioSet`, so **common random numbers** apply: every candidate faces the same scenarios, and differences in fitness are differences between brains.
 
-- *(proposed)* **The generated layout is stored in the scenario's `params`** (obstacles, box pose, target, agent poses, the difficulty), not regenerated from the seed in the world. The world then has no randomness of its own, the scenario set's fingerprint covers the actual layouts (so a change to the generator cannot silently change a recorded run's scenarios: resuming is refused, core design §6.4), and the set can be saved and inspected as JSON. A layout of 100 agents is a few kilobytes.
+- **The generated layout is stored in the scenario's `params`** (obstacles, box pose, target, agent poses, the difficulty), not regenerated from the seed in the world. The world then has no randomness of its own, the scenario set's fingerprint covers the actual layouts (so a change to the generator cannot silently change a recorded run's scenarios: resuming is refused, core design §6.4), and the set can be saved and inspected as JSON. A layout of 100 agents is a few kilobytes. The format (`scenarios.py`): `box` `[x, y, angle]`, `target` `[x, y]`, `circles` `[[x, y, radius], ...]`, `rects` `[[x, y, half_width, half_height], ...]`, `agents` `[[x, y, heading], ...]`, plus `difficulty` and `attempts`.
 - **The world has no noise in v1** (no sensor or actuator noise): the episode's randomness is entirely the scenario's. Noise is a possible lever for robustness on unseen layouts (§10.6).
 
 ### 4.2 Difficulty and the training set
@@ -159,19 +178,19 @@ A scenario is drawn from a seed: the **obstacle layout**, the **box's position a
 | Parameter | easy | full |
 |---|---|---|
 | obstacles | 0 to 2 | 2 to 6 |
-| box–target distance | 3 to 5 units | 6 to 12 units *(proposed)* |
+| box–target distance | 3 to 5 units | 6 to 12 units |
 | spawn | within 3 units of the box | scattered across the arena |
 
-*(proposed)* The default set is **32 scenarios: 8 easy and 24 full**, with the mix configurable (fractions per difficulty, or a list of difficulty levels). Easy scenarios give a clueless team something to stumble into (agents start near the box, close enough to see it, §10.1); the full ones keep evolution pointed at the real task.
+The default set is **32 scenarios: 8 easy and 24 full** (in that order, ids `train-0000`...), with the mix configurable (fractions per difficulty, or a list of difficulty levels). Easy scenarios give a clueless team something to stumble into (agents start near the box, close enough to see it, §10.1); the full ones keep evolution pointed at the real task.
 
 ### 4.3 Held-out sets
 
-**Fresh layouts never seen in training, at full difficulty**, evaluated after a run with `auxein.driver.evaluate_held_out` (or every few generations for the early stop, §6): the evidence for the "deployment to unseen situations" claim. *(proposed)* 64 scenarios by default, generated from a seed of their own, so that they are disjoint from the training set by construction; the generator checks that no layout repeats. The strategy never sees them.
+**Fresh layouts never seen in training, at full difficulty**, evaluated after a run with `auxein.driver.evaluate_held_out` (or every few generations for the early stop, §6): the evidence for the "deployment to unseen situations" claim. 64 scenarios by default (ids `held-0000`...), generated from a seed and a **stream name** of their own, so that they are disjoint from the training set by construction, even with the same seed; `check_disjoint` verifies that no layout repeats. The strategy never sees them.
 
 ### 4.4 Episodes and delivery
 
 - **A fixed limit**, 600 steps by default (30 s of simulated time at `dt = 0.05`), **ending early on delivery** (§2.8).
-- **Delivery:** the **box's centre enters the target zone**, a circle (*(proposed)* of radius 1.5 units); the box's orientation does not matter.
+- **Delivery:** the **box's centre enters the target zone**, a circle (of radius 1.5 units); the box's orientation does not matter.
 - **Team size** is a parameter: 20–40 typical, up to 100. One run uses one team size; the brain does not depend on it (§3.4), so a brain evolved with 20 agents can be shown with 40.
 
 ---
@@ -217,7 +236,7 @@ The aggregator's **descriptors** carry the per-run summaries the charts and the 
 - **Strategy.** **`GeneticAlgorithm`** is the main strategy: a population evolving is the clearest story. **`PycmaStrategy`** (CMA-ES) on the same setup is a comparison run (M4); §10.6 notes its limits at 1,474 dimensions.
 - **Driver settings.** Generation delivery, deterministic mode, recording on (`run_dir`), progress printed with `auxein.callbacks.print_progress`, and an optional **early stop when the held-out success rate passes a threshold**: a callback that, every few generations, evaluates the current best on the held-out set and returns `StopRun` (§10.6 notes what has to be checked first).
 - **The evaluator.** `EpisodeEvaluator(policy, world, training_set, aggregator)`, which takes Auxein's batched path because the world has `run_batch`, `MLPPolicy` has `decode_batch` and the GA's batches are arrays.
-- **Backend.** numpy float32 or torch float32 on Metal; the choice is made at M1 from the measured performance (§9).
+- **Backend.** numpy float32 or torch float32 on Metal; the choice is made at M1b from the full probe (§9). M1a's timing of the physics alone already points to torch on Metal (§10.3).
 - **A command-line tool** trains from a TOML config, reproducible from its seed: the config fixes the world, the team, the sensing, the network, the scenario sets, the fitness weights, the strategy, the budget and the backend, and is copied into the run directory.
 
 ---
@@ -229,6 +248,12 @@ The aggregator's **descriptors** carry the per-run summaries the charts and the 
 - **Default milestones:** log-spaced generations (1, 2, 5, 10, 20, 50, 100, 200, 500, …, and the last), **skipping a milestone whose champion is unchanged** from the previous one (the same candidate id): about 8–10 clips for a run of a few hundred generations. Any generation, or every `n`th, on request. The log spacing is computed here, with one `best_up_to(k)` per milestone, since `champions(every=n)` is arithmetic.
 - **Showcase scenarios.** Each clip shows one or more fixed showcase scenarios, from the training set and from a held-out set, **the same across milestones** so that they can be compared.
 - **A montage:** the milestone clips in sequence or side by side, with the generation number and a small fitness-over-generations curve with a moving marker.
+- **Look and feel** (decided at M1a, `common/theme.py`): every video, gallery and chart shares one theme, **monochrome silver on near-black**, with no accent colour.
+  - **State is shown with brightness, never with hue.** The box is outlined in steel at rest, filled bright white while moving, silver once delivered, when the target zone fills. Agents touching the box are bright white.
+  - **Agents** are silver chevrons along their heading, inside a faint outline of their true disc, and agents close to each other are joined by faint lines (in M1b these can show which teammates each agent senses).
+  - **Type:** a small tracked uppercase label, a light headline (Inter Tight Light) and a muted lead (Inter Light) above the panels; small tracked captions in each panel. Inter and Inter Tight are bundled (`common/fonts/`, SIL Open Font License), so videos look the same on every machine, CI included.
+  - **Depth:** the floor is lit faintly at its centre and dithered so that the shallow gradient does not band.
+  - **No branding** in the videos.
 - **Format:** MP4, drawn with matplotlib and encoded by ffmpeg. ffmpeg comes from the `imageio-ffmpeg` wheel, which ships a static binary for macOS and Linux; matplotlib's `FFMpegWriter` is pointed at it, so no system ffmpeg is needed and `uv sync` alone is enough on a Mac and in CI.
 - **Charts:** fitness over generations from `RunReader.generation_history()` (best, mean and median per generation), and the success rate and `max_pushers` from the recorded descriptors.
 
@@ -239,26 +264,31 @@ The aggregator's **descriptors** carry the per-run summaries the charts and the 
 ```
 auxein_scenarios/
   common/                 # helpers shared by the scenarios
-    geometry.py           # 2-D geometry on batched arrays: frames, distances, closest points, ray casts
-    rendering.py          # matplotlib + ffmpeg: writer, overlays, montage
+    geometry.py           # 2-D geometry on batched arrays: frames, rectangle contacts, corners (ray casts: M1b)
+    rendering.py          # matplotlib + ffmpeg: figures, frame timing, MP4 and PNG (overlays, montage: M3)
+    theme.py              # the look: colours, fonts, agent glyph, floor (§7)
+    fonts/                # Inter and Inter Tight, with their licences
     runs.py               # run directories and opening their recordings
     cli.py                # config loading, backend choice, common options
   box_pushing/            # this scenario
-    world.py              # the BatchedEnvironment: state, integration, episodes, measurements (§2)
+    world.py              # the physics core: layout, state, step, runner, trajectories (§2.10); run_batch from M1b
     contacts.py           # the penalty contact model, every pair (§2.6)
+    scripted.py           # scripted controllers from the true state, for tests and demos (§2.10)
     sensors.py            # the observation vector (§3)
     scenarios.py          # the scenario generator, difficulties, training and held-out sets (§4)
     fitness.py            # measurements to score: the Aggregator (§5)
-    config.py             # the TOML config (§6)
+    config.py             # the world's parameters and derived quantities (§2); the TOML training config from M2 (§6)
     train.py              # building the run and running Auxein (§6)
-    render.py             # clips, montage and charts from a recording (§7)
-    cli.py                # the command-line tool
-tests/                    # smoke_test.py now; tests/box_pushing/ from M1
+    render.py             # clips and galleries (M1a); milestones, montage and charts from a recording (M3, §7)
+    demos.py              # the demo scenes of M1a
+    cli.py                # the command-line tool: box-pushing demo ..., box-pushing scenarios ...
+benchmarks/               # scripts run by hand: physics_timing.py (M1a)
+tests/                    # smoke_test.py, common/, box_pushing/
 docs/design/              # one design document per scenario
 docs/auxein-issues.md     # the log of Auxein bugs and requests found here
 ```
 
-`contacts.py` and `config.py` are additions to the module list this design was given (§10.6): the contact model is the largest and riskiest part of the physics, and the config is shared by training, rendering and the held-out report.
+`contacts.py` and `config.py` were added to the module list this design was given (decided, §10.6): the contact model is the largest and riskiest part of the physics, and the parameters are shared by the world, training, rendering and the held-out report. M1a added `scripted.py` (test and demo tools, not part of training) and `demos.py`.
 
 **Adding a second scenario:** a subpackage `auxein_scenarios/<name>/`, its design document `docs/design/<name>.md`, its tests `tests/<name>/`, and an entry in the README's scenario list. A helper starts in its scenario and moves to `common/` when a second scenario needs it, not before.
 
@@ -266,8 +296,10 @@ docs/auxein-issues.md     # the log of Auxein bugs and requests found here
 
 ## 9. Milestones
 
-- **M0** (this): the design document and the repository scaffold.
-- **M1:** the world, sensors and scenario generator, with an MP4 viewer driven by scripted and random policies; physics tests (conservation where it applies, the friction threshold with `k − 1` and `k` agents, rotation from off-centre pushes, no tunnelling through walls at maximum speed, determinism); a performance probe (steps per second for 20/40/100 agents × candidates × scenarios, on numpy and torch CPU, and Metal on the owner's Mac), from which the backend and the default sizes are chosen.
+- **M0** (done): the design document and the repository scaffold.
+- **M1** is split in two, each ending with something to run and watch:
+  - **M1a** (done): the physics core (bodies, contacts, friction, integration, delivery), the scenario generator, and a viewer: MP4 demo clips driven by scripted controllers that use the true state, and PNG galleries of layouts (`uv run box-pushing demo all`, `uv run box-pushing scenarios`); physics tests (§2.10); a quick timing of the physics (§10.3).
+  - **M1b:** sensors and observations (§3), the Auxein `BatchedEnvironment` (`run_batch`, measurements), random `MLPPolicy` brains acting on their own senses, a clip with a sensing overlay, determinism end to end, and the full performance probe that picks the backend.
 - **M2:** fitness, the training CLI and config, recording, first trained runs.
 - **M3:** videos and the montage from the recording; the held-out report.
 - **M4:** the CMA-ES comparison and polished clips for the website.
@@ -282,13 +314,26 @@ At full difficulty agents start scattered across a 20 × 20 arena and sense the 
 
 ### 10.2 Physics
 
-- **The rotating box against rectangles** (§2.6): corner penetration can give a wrong normal near a corner–corner contact, and a box wedged between two obstacles can jitter or be pushed through a thin one. Mitigations: obstacles no thinner than 0.5 units, tests of the box pushed into a corner and along an edge (M1).
-- **The friction threshold** (§2.4): with penalty contacts the push on the box is the contact spring force, which oscillates around the agents' thrust, so near the threshold the box may stick and slip. The test with `k − 1` and `k` agents (M1) pins the behaviour; a small hysteresis may be needed. Treating force and torque with separate thresholds can let a team spin the box in place more easily than it could slide it.
-- **Stiffness against the time step:** penalty contacts need a small enough step; too soft and agents sink into the box, too stiff and the integration blows up (a NaN measurement fails the candidate, which Auxein records as `FAILED`: a canary, but one that would punish brains for the physics' fault). Substeps (§2.1) are the lever.
+- **The rotating box against rectangles** (§2.6): corner penetration can give a wrong normal near a corner–corner contact, and a box wedged between two obstacles can jitter or be pushed through a thin one. Mitigations: obstacles no thinner than 0.5 units, the stiffer box contact. **M1a:** the tests and the `obstacles` demo show no pass-through (a crowd pushing the box into a 0.5-thick rectangle, the box into a corner); corner–corner overlaps count twice (a stiffer contact, not a wrong one). Not yet seen: a box wedged between two obstacles, which the generator's clearance makes rare.
+- **The friction threshold** (§2.4): with penalty contacts the push on the box is the contact spring force, which oscillates around the agents' thrust. **M1a:** no stick-slip at the threshold in the tests (`k − 1` hold it, `k` move it steadily, for `k` = 2 to 4), and no hysteresis was needed. Two changes were (§2.4): `μ` from 0.8 to 0.9, and a kinetic torque. Force and torque still have separate thresholds, so `k − 1` agents pushing at one end can pivot the box (a torque above `τ_s` with a force below `F_s`), as a real box pivots; once it turns, the kinetic torque stops it as soon as they stop.
+- **Impacts may be an exploit** (§2.4): an agent ramming the box at full speed nudges it a few centimetres even alone, as a real box would. Ramming in turn is slow (by estimate, about 0.05 units/s for one agent against 0.3 to 1 for a pushing team), but evolution finds slow strategies too. To watch in the first runs (M2); the levers are a lower top speed, a heavier box, or a cost for collisions in the fitness.
+- **The step limit may be tight.** With the friction as built, `k` agents barely move the box: four agents in line push `4 F_a = 8` against kinetic friction `6.3`, about 0.3 units/s, so a 10-unit full-difficulty delivery takes about 30 s, the whole episode (600 steps at 0.05 s), before finding the box. Faster needs more pushers in line (5 give about 0.55 units/s, 6 about 0.7), which is the cooperation the scenario is about, but it shrinks the margin for clueless early generations. The naive scripted team delivers 10 of 16 easy and 5 of 16 full scenarios in time (§2.10); with the first version of the friction (no kinetic torque), it delivered all 16 easy ones, because a spinning box never came to rest and the team never had to beat the static threshold again. Levers for M2: a longer step limit, a smaller `k`, a smaller margin between `F_k` and `k F_a`, or a higher top speed.
+- **Frictionless contacts limit oblique pushes** (§2.6): agents push only along a face's normal and slide off when they push at an angle. The demos show the scripted team stalling when it pushes the box diagonally; evolved teams will have to push square to a face, or turn the box first. Agent–box friction is the lever if that proves too hard.
+- **Stiffness against the time step:** penalty contacts need a small enough step; too soft and agents sink into the box, too stiff and the integration blows up (a NaN measurement fails the candidate, which Auxein records as `FAILED`: a canary, but one that would punish brains for the physics' fault). Substeps (§2.1) are the lever. **M1a:** `WorldParams` refuses unstable combinations (§2.6), and a 2,000-step run of 100 agents crowding the box with random actions stays finite in float32.
 
 ### 10.3 Cost
 
-**Back-of-envelope** (to be replaced by M1's probe): agent pairs are `n · s · N²` per substep. With 100 candidates × 32 scenarios × 40 agents that is about 5 million pairs, each a few tens of operations on `(n, s, N, N)` arrays of 5 million elements (20 MB each in float32): with numpy's temporaries, of the order of 0.1 s per substep, so about 2 minutes for the 1,200 substeps of one generation, plus sensing (rays: `n · s · N · 12` casts against about 10 shapes). **A generation should take about a minute for hours-long runs** (300 generations in 5 hours), so the numpy path at these sizes is borderline, and **100 agents (6× the pairs of 40) needs Metal or smaller populations and sets**. The probe decides the defaults: population, scenarios per generation, team size and backend.
+**A generation should take about a minute for hours-long runs** (300 generations in 5 hours). Agent pairs are `n · s · N²` per substep, so the cost grows with the square of the team.
+
+**Measured at M1a** (`uv run python -m benchmarks.physics_timing --device mps`): the physics core alone (contacts, friction, integration; no sensing, no policy), 100 candidates × 32 scenarios, 2 substeps per step, on an Apple M4 Pro (24 GB, torch 2.14 with 12 CPU threads). A generation is 600 steps (an upper bound: delivered scenarios still cost compute).
+
+| agents | numpy float32 | torch float32, CPU | torch float32, Metal |
+|---:|---:|---:|---:|
+| 20 | 0.093 s/step, 56 s/generation | 0.073 s, 44 s | 0.016 s, **9 s** |
+| 40 | 0.313 s, 188 s | 0.098 s, 59 s | 0.029 s, **17 s** |
+| 100 | 2.010 s, 1,206 s | 0.342 s, 205 s | 0.122 s, **73 s** |
+
+The earlier back-of-envelope (about 2 minutes per generation on numpy at 40 agents) was close (3 minutes). **Torch on Metal is 4 to 16 times faster than numpy**, and keeps 40 agents within the budget with room for sensing and the policy, and even 100 agents near it; numpy is fine for 20 agents and for tests. Sensing (M1b) adds another pairwise term (teammate sectors) and the rays, so the full probe (M1b) decides the defaults: population, scenarios per generation, team size and backend.
 
 ### 10.4 Recording size
 
@@ -300,21 +345,21 @@ Auxein records every evaluated genome and every episode's measurements. A genome
 - **Auxein's test fixtures are not installed with it** (`tests/support/` is outside the wheel), so the minimal reproductions the protocol asks for are written in a clone of Auxein, not here.
 - **Held-out evaluation during a run** (the early stop, §6) calls `evaluate_held_out` on a run directory that the driver is still writing. Whether that is supported (it reads the recording while the writer holds `writer.lock`; `write=False` avoids `held_out.json`) is to be checked at M2; if not, it is a request to Auxein, and the fallback is to stop on the **training** success rate with `stop_when` (cheap, reproducible, but not the unseen-scenarios claim).
 
-### 10.6 Proposed details to review
+### 10.6 Proposed details: decided at M1a
 
-Details this design needed but was not given, each marked *(proposed)* above:
+Details this design needed but was not first given. **Items 1–10 and 14 were decided at M1a** as written, except 7 and 8, which were decided as their alternatives; items 11–13 stay open (M2 and M4) and keep their *(proposed)* markers above.
 
-1. **Time step and substeps** (§2.1): `dt = 0.05` s per episode step, 2 physics substeps.
-2. **Obstacle sizes and the validity check** (§2.2): the grid flood fill with obstacles inflated by the box's circumscribed radius (conservative).
-3. **The friction threshold** `F_s = (k − 0.5) F_a`, the torque threshold `τ_s = F_s (w + h) / 6`, kinetic `F_k = 0.8 F_s` (§2.4).
-4. **Agent dynamics** (§2.5): reverse at half thrust, a first-order lag on turning, strong lateral damping.
-5. **Frictionless contacts** between bodies (§2.6), and the corner-penetration model for box–rectangle.
-6. **Input normalisation** (§3), **rays do not see teammates** and report 1 for the box, 0 otherwise (§3.2), **the ray range equals the sensing range** (§3.3).
-7. **The box's relative heading** (§3.3): the box is symmetric under a half turn, so `(sin θ, cos θ)` gives two different inputs for the same situation, and the network must learn that they mean the same. `(sin 2θ, cos 2θ)` would remove the ambiguity at no cost in size. Recommended, but it changes what the decision says.
-8. **Teammate density** `Σ (1 − d / r)` (§3.4): it is fixed in size whatever the team, but its values grow with the team's density, so a brain evolved with 20 agents sees larger inputs with 100. Normalising by the team size, or squashing (`1 − e^(−x)`), would make "the same brain for any team size" more than a shape guarantee.
-9. **Scenario params hold the whole layout** (§4.1), and **no noise** in the world in v1 (sensor or actuator noise may help generalisation to unseen layouts).
-10. **Full-difficulty box–target distance** 6–12 units, **the training mix** 8 easy + 24 full, **64 held-out scenarios**, **target zone radius** 1.5 (§4).
-11. **The progress clip at −1** and **the approach term's definition** (§5.1); whether the approach term should fade out over generations (Auxein's aggregator is fixed for a run, so that would be a staged run or a request).
-12. **`max_pushers`** as a recorded measurement (§5.2), for the "cooperation emerging" chart.
-13. **CMA-ES at 1,474 dimensions** (§6): full-covariance CMA-ES learns its covariance at a rate of about `1/d²`, so in a few hundred generations it barely adapts it, and its `O(d²)` state and eigendecompositions run on the host. The separable variant (pycma's `CMA_diagonal` option, through `PycmaStrategy(options=...)`) is the fairer comparison. `PycmaStrategy` writes no checkpoints, so a resumed comparison run replays from its start.
-14. **`contacts.py` and `config.py`** as modules (§8).
+1. **Decided.** Time step and substeps (§2.1): `dt = 0.05` s per episode step, 2 physics substeps.
+2. **Decided.** Obstacle sizes and the validity check (§2.2): the grid flood fill with obstacles inflated by the box's circumscribed radius (conservative).
+3. **Decided, with two changes found at M1a.** The friction threshold `F_s = (k − 0.5) F_a` and the torque threshold `τ_s = F_s (w + h) / 6`. Kinetic friction is `F_k = 0.9 F_s` (not 0.8, which let `k − 1` agents keep a moving box moving), and a kinetic torque `τ_k = 0.9 τ_s` was added (without it `k − 1` agents kept a jolted box turning) (§2.4).
+4. **Decided.** Agent dynamics (§2.5): reverse at half thrust, a first-order lag on turning, strong lateral damping.
+5. **Decided.** Frictionless contacts between bodies, and the corner-penetration model for box–rectangle (§2.6). Added at M1a: a separate, stiffer contact for the box against walls and obstacles, and damping as a ratio of critical.
+6. **Decided.** Input normalisation (§3), **rays do not see teammates** and report 1 for the box, 0 otherwise (§3.2), **the ray range equals the sensing range** (§3.3).
+7. **Decided as `(sin 2θ, cos 2θ)`.** The box's relative heading (§3.3): the box is symmetric under a half turn, so `(sin θ, cos θ)` would give two different inputs for the same situation. The observation size stays 43. Implemented with the sensors (M1b).
+8. **Decided as squashed.** Teammate density (§3.4): each sector's value is `1 − e^(−x)` of the closeness-weighted count `x = Σ (1 − d / r)`, in `[0, 1)` whatever the team size, so "the same brain for any team size" holds for the values as well as the shape. Implemented with the sensors (M1b).
+9. **Decided.** Scenario params hold the whole layout (§4.1), and **no noise** in the world in v1 (sensor or actuator noise may help generalisation to unseen layouts).
+10. **Decided.** Full-difficulty box–target distance 6–12 units, **the training mix** 8 easy + 24 full, **64 held-out scenarios**, **target zone radius** 1.5 (§4).
+11. **Open (M2).** The progress clip at −1 and **the approach term's definition** (§5.1); whether the approach term should fade out over generations (Auxein's aggregator is fixed for a run, so that would be a staged run or a request).
+12. **Open (M2).** `max_pushers` as a recorded measurement (§5.2), for the "cooperation emerging" chart.
+13. **Open (M4).** CMA-ES at 1,474 dimensions (§6): full-covariance CMA-ES learns its covariance at a rate of about `1/d²`, so in a few hundred generations it barely adapts it, and its `O(d²)` state and eigendecompositions run on the host. The separable variant (pycma's `CMA_diagonal` option, through `PycmaStrategy(options=...)`) is the fairer comparison. `PycmaStrategy` writes no checkpoints, so a resumed comparison run replays from its start.
+14. **Decided.** `contacts.py` and `config.py` as modules (§8); M1a also added `scripted.py` and `demos.py`.
