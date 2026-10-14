@@ -258,6 +258,6 @@ def render_gallery(
         difficulty, attempts = layout.get("difficulty", ""), layout.get("attempts", "")
         panel.caption.set_text(
             f"{panel.label}\n{difficulty}, {len(cast('list[object]', layout['agents']))} agents"
-            + (f", {attempts} draws" if attempts else "")
+            + (f", draws: {attempts}" if attempts else "")
         )
     return save_png(fig, path)

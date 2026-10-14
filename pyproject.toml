@@ -71,9 +71,9 @@ extend-exclude = ["docs"]
 select = ["E", "F", "W", "B", "UP", "I"]
 
 [tool.pyright]
-include = ["auxein_scenarios", "tests"]
+include = ["auxein_scenarios", "tests", "benchmarks"]
 pythonVersion = "3.11"
-# the package is checked in strict mode, as Auxein's; the tests stay at the standard level, as Auxein's benchmark harness
+# the package is checked in strict mode, as Auxein's; the tests and benchmarks stay at the standard level, as Auxein's benchmark harness
 strict = ["auxein_scenarios"]
 
 [tool.pytest.ini_options]

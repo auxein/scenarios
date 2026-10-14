@@ -8,7 +8,7 @@ demo shows exactly what the physics computes.
 |---|---|
 | `threshold` | `k − 1` agents push and the box does not move; one more joins and it moves |
 | `rotation` | a push near one end turns the box while it slides; a centred push does not |
-| `obstacles` | the box pushed against a circle, a rectangle and into a corner slides along them and does not pass through |
+| `obstacles` | pushed at an angle: the box slides over a circle, stops against a thin rectangle, wedges into a corner |
 | `crowd` | 40 agents sent to one point jostle; nobody overlaps anybody for long; nothing explodes |
 | `walls` | agents at full speed into the walls and the corners: no tunnelling |
 | `delivery` | the scripted push team delivers the box in an easy and a full scenario; the scenario freezes on delivery |
@@ -112,17 +112,18 @@ def _rotation(params: WorldParams, agents: int, backend: Backend) -> Demo:
 def _obstacles(params: WorldParams, agents: int, backend: Backend) -> Demo:
     rng = np.random.default_rng(3)
     team = 12
-    circle = layout([-5.0, 0.7, math.pi / 2], [7.0, 0.0], _behind(-5.0, 0.7, team, rng), circles=[[0.0, 0.0, 1.2]])
-    rect = layout([-5.0, 1.2, math.pi / 2], [7.0, 0.0], _behind(-5.0, 1.2, team, rng), rects=[[0.0, 0.0, 0.25, 2.5]])
+    circle = layout([-5.0, 2.2, math.pi / 2], [7.0, 2.2], _behind(-5.0, 2.2, team, rng), circles=[[0.0, 0.0, 1.2]])
+    rect = layout([-5.0, 0.5, math.pi / 2], [6.0, 4.5], _behind(-5.0, 0.5, team, rng), rects=[[0.0, 0.0, 0.25, 2.5]])
     corner_box = [5.0, 5.0, math.pi / 4]
     corner_team = [[a[0] - 0.0, a[1], a[2]] for a in _behind(5.0, 5.0, team, rng)]
     corner = layout(corner_box, [-8.0, -8.0], corner_team)
-    goals_x = np.asarray([7.0, 7.0, 12.0])[None, :]
-    goals_y = np.asarray([0.0, 0.0, 12.0])[None, :]
+    goals_x = np.asarray([7.0, 6.0, 12.0])[None, :]
+    goals_y = np.asarray([2.2, 4.5, 12.0])[None, :]
     return Demo(
         "obstacles",
         "Contacts: the box against a circle, a rectangle and a corner",
-        "The push team drives the box into each: it slides along them or stops, and never passes through.",
+        "The push team drives the box into each at an angle: it slides over the circle and on to the target, stops against "
+        "the thin rectangle's end, and wedges into the corner. It never passes through.",
         [circle, rect, corner],
         ["against a circle", "against a thin rectangle", "into a corner"],
         scripted.push(backend.asarray(goals_x), backend.asarray(goals_y)),
