@@ -54,7 +54,7 @@ def time_step(backend: Backend, agents: int, candidates: int, n_scenarios: int, 
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description="A quick timing of the box-pushing physics core.")
     parser.add_argument("--agents", type=int, nargs="+", default=[20, 40, 100])
     parser.add_argument("--candidates", type=int, default=100)
     parser.add_argument("--scenarios", type=int, default=32)
