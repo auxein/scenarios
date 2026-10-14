@@ -74,7 +74,7 @@ def write_mp4(fig: Figure, update: Callable[[int], None], frames: Sequence[int],
     width, height = (2 * math.floor(inches * fig.dpi / 2) / fig.dpi for inches in fig.get_size_inches())
     fig.set_size_inches(width, height)
     matplotlib.rcParams["animation.ffmpeg_path"] = imageio_ffmpeg.get_ffmpeg_exe()
-    writer = FFMpegWriter(fps=round(fps), codec="libx264", extra_args=["-pix_fmt", "yuv420p", "-crf", "20"])
+    writer = FFMpegWriter(fps=round(fps), codec="libx264", extra_args=["-pix_fmt", "yuv420p", "-crf", "18"])
     with writer.saving(fig, str(target), dpi=fig.dpi):
         for value in frames:
             update(value)

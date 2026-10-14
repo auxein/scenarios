@@ -248,6 +248,12 @@ The aggregator's **descriptors** carry the per-run summaries the charts and the 
 - **Default milestones:** log-spaced generations (1, 2, 5, 10, 20, 50, 100, 200, 500, …, and the last), **skipping a milestone whose champion is unchanged** from the previous one (the same candidate id): about 8–10 clips for a run of a few hundred generations. Any generation, or every `n`th, on request. The log spacing is computed here, with one `best_up_to(k)` per milestone, since `champions(every=n)` is arithmetic.
 - **Showcase scenarios.** Each clip shows one or more fixed showcase scenarios, from the training set and from a held-out set, **the same across milestones** so that they can be compared.
 - **A montage:** the milestone clips in sequence or side by side, with the generation number and a small fitness-over-generations curve with a moving marker.
+- **Look and feel** (decided at M1a, `common/theme.py`): every video, gallery and chart shares one theme, **monochrome silver on near-black**, with no accent colour.
+  - **State is shown with brightness, never with hue.** The box is outlined in steel at rest, filled bright white while moving, silver once delivered, when the target zone fills. Agents touching the box are bright white.
+  - **Agents** are silver chevrons along their heading, inside a faint outline of their true disc, and agents close to each other are joined by faint lines (in M1b these can show which teammates each agent senses).
+  - **Type:** a small tracked uppercase label, a light headline (Inter Tight Light) and a muted lead (Inter Light) above the panels; small tracked captions in each panel. Inter and Inter Tight are bundled (`common/fonts/`, SIL Open Font License), so videos look the same on every machine, CI included.
+  - **Depth:** the floor is lit faintly at its centre and dithered so that the shallow gradient does not band.
+  - **No branding** in the videos.
 - **Format:** MP4, drawn with matplotlib and encoded by ffmpeg. ffmpeg comes from the `imageio-ffmpeg` wheel, which ships a static binary for macOS and Linux; matplotlib's `FFMpegWriter` is pointed at it, so no system ffmpeg is needed and `uv sync` alone is enough on a Mac and in CI.
 - **Charts:** fitness over generations from `RunReader.generation_history()` (best, mean and median per generation), and the success rate and `max_pushers` from the recorded descriptors.
 
@@ -260,6 +266,8 @@ auxein_scenarios/
   common/                 # helpers shared by the scenarios
     geometry.py           # 2-D geometry on batched arrays: frames, rectangle contacts, corners (ray casts: M1b)
     rendering.py          # matplotlib + ffmpeg: figures, frame timing, MP4 and PNG (overlays, montage: M3)
+    theme.py              # the look: colours, fonts, agent glyph, floor (§7)
+    fonts/                # Inter and Inter Tight, with their licences
     runs.py               # run directories and opening their recordings
     cli.py                # config loading, backend choice, common options
   box_pushing/            # this scenario

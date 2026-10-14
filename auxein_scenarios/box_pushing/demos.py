@@ -70,9 +70,10 @@ def _threshold(params: WorldParams, agents: int, backend: Backend) -> Demo:
     return Demo(
         "threshold",
         f"Static friction: {k - 1} agents cannot move the box, {k} can",
-        f"{k - 1} agents push from the start: the box stays grey (at rest). The {k}th arrives: the box turns orange and moves.",
+        f"{k - 1} agents push from the start: the box stays dark, only outlined (at rest). "
+        f"The {k}th arrives: it lights up white and moves.",
         [layout([-2.0, 0.0, math.pi / 2], [8.0, 0.0], team)],
-        [f"k = {k}"],
+        [f"{k} agents needed"],
         scripted.constant(1.0),
         300,
     )
@@ -115,8 +116,7 @@ def _obstacles(params: WorldParams, agents: int, backend: Backend) -> Demo:
     circle = layout([-5.0, 2.2, math.pi / 2], [7.0, 2.2], _behind(-5.0, 2.2, team, rng), circles=[[0.0, 0.0, 1.2]])
     rect = layout([-5.0, 0.5, math.pi / 2], [6.0, 4.5], _behind(-5.0, 0.5, team, rng), rects=[[0.0, 0.0, 0.25, 2.5]])
     corner_box = [5.0, 5.0, math.pi / 4]
-    corner_team = [[a[0] - 0.0, a[1], a[2]] for a in _behind(5.0, 5.0, team, rng)]
-    corner = layout(corner_box, [-8.0, -8.0], corner_team)
+    corner = layout(corner_box, [-8.0, -8.0], _behind(5.0, 5.0, team, rng))
     goals_x = np.asarray([7.0, 6.0, 12.0])[None, :]
     goals_y = np.asarray([2.2, 4.5, 12.0])[None, :]
     return Demo(
@@ -128,6 +128,7 @@ def _obstacles(params: WorldParams, agents: int, backend: Backend) -> Demo:
         ["against a circle", "against a thin rectangle", "into a corner"],
         scripted.push(backend.asarray(goals_x), backend.asarray(goals_y)),
         400,
+        columns=3,
         stop_when_done=False,
     )
 
@@ -141,7 +142,7 @@ def _crowd(params: WorldParams, agents: int, backend: Backend) -> Demo:
         [float(rho * math.cos(a)), float(rho * math.sin(a)), float(rng.uniform(-math.pi, math.pi))]
         for rho, a in zip(radii, angles, strict=True)
     ]
-    scene = layout([8.0, -8.5, 0.0], [-8.0, 8.0], team)
+    scene = layout([8.0, -8.5, 0.0], [-7.5, -7.5], team)
     return Demo(
         "crowd",
         f"Crowd: {count} agents sent to the same point",
@@ -193,7 +194,8 @@ def _delivery(params: WorldParams, agents: int, backend: Backend) -> Demo:
     return Demo(
         "delivery",
         f"Delivery: the scripted push team ({count} agents) delivers the box",
-        "The box's centre enters the target zone: the box turns green and the scenario freezes, while the other goes on.",
+        "The box's centre enters the target zone: the zone fills, the box dims to silver and the scenario freezes, "
+        "while the other goes on.",
         chosen,
         labels,
         scripted.push(),
@@ -242,6 +244,7 @@ def run(
         world_params,
         Path(out) / f"{demo.name}.mp4",
         labels=demo.labels,
+        kicker=f"Demo · {demo.name}",
         title=demo.title,
         subtitle=demo.subtitle,
         fps=fps,

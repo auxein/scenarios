@@ -52,6 +52,7 @@ def _scenarios(args: argparse.Namespace) -> int:
         params,
         path,
         labels=list(generated.ids),
+        kicker="Scenarios",
         title=f"{args.count} {args.difficulty} scenarios, seed {args.seed}, {args.agents} agents",
     )
     print(path)
