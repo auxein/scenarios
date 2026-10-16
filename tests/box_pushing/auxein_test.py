@@ -124,7 +124,9 @@ def test_a_candidate_alone_or_in_a_batch(corner_backend: Backend, genomes: Any) 
     for row in (0, 3):
         alone = measurements(corner_backend, world, genomes[row : row + 1], SET)
         for name in MEASUREMENTS:
-            np.testing.assert_allclose(alone[name][0], together[name][row], rtol=tolerance(corner_backend), atol=tolerance(corner_backend), err_msg=name)
+            np.testing.assert_allclose(
+                alone[name][0], together[name][row], rtol=tolerance(corner_backend), atol=tolerance(corner_backend), err_msg=name
+            )
 
 
 def test_scenario_order_does_not_change_a_scenarios_result(corner_backend: Backend, genomes: Any) -> None:
@@ -133,4 +135,6 @@ def test_scenario_order_does_not_change_a_scenarios_result(corner_backend: Backe
     reversed_set = ScenarioSet.from_params([s.params for s in reversed(SET)], seed=1, ids=list(reversed(SET.ids)))
     backward = measurements(corner_backend, world, genomes, reversed_set)
     for name in MEASUREMENTS:
-        np.testing.assert_allclose(backward[name][:, ::-1], forward[name], rtol=tolerance(corner_backend), atol=tolerance(corner_backend), err_msg=name)
+        np.testing.assert_allclose(
+            backward[name][:, ::-1], forward[name], rtol=tolerance(corner_backend), atol=tolerance(corner_backend), err_msg=name
+        )
