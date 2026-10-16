@@ -10,12 +10,52 @@ anything runs rather than a NaN a thousand steps into a run.
 sensing range. It sits beside `WorldParams` rather than inside it, because the physics never reads it: the same world can be
 sensed differently, and the observation's size depends on it alone (`sensors.observation_layout`).
 
-TOML loading of the training configuration comes with training (M2); it will build these.
+**The training configuration** (M2a, design doc §6): `TrainingConfig`, the whole definition of a run, loaded from TOML
+(`load_config`, `parse_config`) and written back with every default filled in (`dump_config`). Every field has the design
+doc's default, so a config lists only what it changes; unknown keys and bad values are errors that name the key.
+
+```toml
+name = "pilot"                       # the run directory's prefix (default: the file's name)
+[world.simulation]                   # any field of WorldParams, by section
+max_steps = 900
+[sensing]                            # SensingParams
+[team]
+agents = 40
+[brain]
+hidden = [32]
+scale = 1.0                          # MLPPolicy.space(scale)
+[scenarios]
+easy = 4                             # the training set: 4 easy and 12 full, fixed for the run
+full = 12
+seed = 1
+held_out = 64                        # the held-out set (for after the run)
+held_out_seed = 2
+[fitness]                            # fitness.Weights
+[strategy]                           # GeneticAlgorithm
+population = 100
+offspring = 100
+[budget]
+generations = 400
+[run]
+seed = 1
+backend = "torch"                    # torch or numpy
+device = "mps"                       # mps, cuda or cpu
+precision = "float32"
+checkpoint_every = 10                # generations
+```
 """
 
+import json
 import math
-from dataclasses import asdict, dataclass, field, fields
+import tomllib
+import types
+import typing
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from pathlib import Path
 from typing import Any
+
+from auxein_scenarios.box_pushing.fitness import Weights
 
 __all__ = [
     "AgentParams",
@@ -25,8 +65,20 @@ __all__ = [
     "Derived",
     "FrictionParams",
     "STABILITY_LIMIT",
+    "BrainConfig",
+    "BudgetConfig",
+    "ConfigError",
+    "RunConfig",
+    "ScenariosConfig",
     "SensingParams",
     "SimulationParams",
+    "StrategyConfig",
+    "TeamConfig",
+    "TrainingConfig",
+    "config_differences",
+    "dump_config",
+    "load_config",
+    "parse_config",
     "WorldParams",
 ]
 
@@ -122,11 +174,14 @@ class ContactParams:
 @dataclass(frozen=True)
 class SimulationParams:
     """Time: `dt` per episode step (the policy acts once per step), `substeps` physics steps per episode step, the step limit,
-    and the target zone's radius (delivery: the box's centre within it, design doc §4.4)."""
+    and the target zone's radius (delivery: the box's centre within it, design doc §4.4).
+
+    The step limit is 900 steps (45 s), raised at M2a from 600: four agents move the box at about 0.3 units/s, so 600 steps
+    left a team little time to find the box and push it up to 12 units (design doc §10.2)."""
 
     dt: float = 0.05
     substeps: int = 2
-    max_steps: int = 600
+    max_steps: int = 900
     target_radius: float = 1.5
 
     @property
@@ -333,3 +388,287 @@ class SensingParams:
         if unknown:
             raise ValueError(f"unknown sensing parameters {sorted(unknown)}: use {sorted(known)}")
         return cls(**data)
+
+
+# --- the training configuration (M2a) ---
+
+
+class ConfigError(ValueError):
+    """A training configuration that cannot be used: an unknown key, a value of the wrong type or out of range."""
+
+
+@dataclass(frozen=True)
+class TeamConfig:
+    """The team: `agents` per scenario (design doc §4.4)."""
+
+    agents: int = 40
+
+    def __post_init__(self) -> None:
+        if self.agents < 1:
+            raise ValueError(f"team.agents must be at least 1, got {self.agents}")
+
+
+@dataclass(frozen=True)
+class BrainConfig:
+    """The shared brain (design doc §3.6): the widths of the hidden layers, and the `scale` of its genome space
+    (`MLPPolicy.space(scale)`: weights within `±scale / √fan_in`, biases within `±scale`)."""
+
+    hidden: tuple[int, ...] = (32,)
+    scale: float = 1.0
+
+    def __post_init__(self) -> None:
+        if any(w < 1 for w in self.hidden):
+            raise ValueError(f"brain.hidden widths must be at least 1, got {list(self.hidden)}")
+        if not (math.isfinite(self.scale) and self.scale > 0):
+            raise ValueError(f"brain.scale must be positive, got {self.scale}")
+
+
+@dataclass(frozen=True)
+class ScenariosConfig:
+    """The scenario sets (design doc §4.2–4.3): the training set, `easy` then `full` scenarios from `seed`, **fixed for the whole
+    run** (parents and children are judged on the same scenarios); the held-out set, `held_out` full scenarios from
+    `held_out_seed`, used only after the run."""
+
+    easy: int = 4
+    full: int = 12
+    seed: int = 1
+    held_out: int = 64
+    held_out_seed: int = 2
+
+    def __post_init__(self) -> None:
+        if self.easy < 0 or self.full < 0 or self.easy + self.full < 1:
+            raise ValueError(f"scenarios.easy and scenarios.full must not be negative and not both 0, got {self.easy} and {self.full}")
+        if self.held_out < 1:
+            raise ValueError(f"scenarios.held_out must be at least 1, got {self.held_out}")
+        if self.seed < 0 or self.held_out_seed < 0:
+            raise ValueError("scenarios.seed and scenarios.held_out_seed must not be negative")
+
+
+@dataclass(frozen=True)
+class StrategyConfig:
+    """Auxein's `GeneticAlgorithm` (design doc §6): `population` parents and `offspring` children per generation, plus
+    selection, tournaments of `tournament_size`, intermediate recombination with `crossover_probability`, and self-adaptive
+    mutation starting at `initial_step` (relative to the box's width)."""
+
+    population: int = 100
+    offspring: int = 100
+    crossover_probability: float = 1.0
+    tournament_size: int = 2
+    initial_step: float = 0.1
+
+    def __post_init__(self) -> None:
+        if self.population < 2:
+            raise ValueError(f"strategy.population must be at least 2, got {self.population}")
+        if self.offspring < 1:
+            raise ValueError(f"strategy.offspring must be at least 1, got {self.offspring}")
+        if not 0.0 <= self.crossover_probability <= 1.0:
+            raise ValueError(f"strategy.crossover_probability must be in [0, 1], got {self.crossover_probability}")
+        if self.tournament_size < 1:
+            raise ValueError(f"strategy.tournament_size must be at least 1, got {self.tournament_size}")
+        if not self.initial_step > 0:
+            raise ValueError(f"strategy.initial_step must be positive, got {self.initial_step}")
+
+
+@dataclass(frozen=True)
+class BudgetConfig:
+    """How long the run is, in generations: the initial population, then `generations − 1` generations of children. The only
+    thing a resume may change."""
+
+    generations: int = 400
+
+    def __post_init__(self) -> None:
+        if self.generations < 1:
+            raise ValueError(f"budget.generations must be at least 1, got {self.generations}")
+
+
+BACKENDS = ("numpy", "torch")
+PRECISIONS = ("float32", "float64")
+
+
+@dataclass(frozen=True)
+class RunConfig:
+    """The run: its `seed`, where it computes (torch float32 on Metal by default; design doc §6), and how often it checkpoints
+    (`checkpoint_every` generations)."""
+
+    seed: int = 1
+    backend: str = "torch"
+    device: str = "mps"
+    precision: str = "float32"
+    checkpoint_every: int = 10
+
+    def __post_init__(self) -> None:
+        if self.seed < 0:
+            raise ValueError(f"run.seed must not be negative, got {self.seed}")
+        if self.backend not in BACKENDS:
+            raise ValueError(f"run.backend must be one of {list(BACKENDS)}, got {self.backend!r}")
+        if self.precision not in PRECISIONS:
+            raise ValueError(f"run.precision must be one of {list(PRECISIONS)}, got {self.precision!r}")
+        if self.backend == "numpy" and self.device != "cpu":
+            raise ValueError(f"run.device must be 'cpu' for numpy, got {self.device!r}")
+        if self.checkpoint_every < 1:
+            raise ValueError(f"run.checkpoint_every must be at least 1 generation, got {self.checkpoint_every}")
+
+
+@dataclass(frozen=True)
+class TrainingConfig:
+    """Everything that defines a training run (module docstring), with the design doc's defaults."""
+
+    name: str = "box-pushing"
+    world: WorldParams = field(default_factory=WorldParams)
+    sensing: SensingParams = field(default_factory=SensingParams)
+    team: TeamConfig = field(default_factory=TeamConfig)
+    brain: BrainConfig = field(default_factory=BrainConfig)
+    scenarios: ScenariosConfig = field(default_factory=ScenariosConfig)
+    fitness: Weights = field(default_factory=Weights)
+    strategy: StrategyConfig = field(default_factory=StrategyConfig)
+    budget: BudgetConfig = field(default_factory=BudgetConfig)
+    run: RunConfig = field(default_factory=RunConfig)
+
+    def __post_init__(self) -> None:
+        if not self.name or any(c in self.name for c in "/\\"):
+            raise ValueError(f"name must be a non-empty name without slashes, got {self.name!r}")
+
+    @property
+    def evaluations(self) -> int:
+        """The evaluation budget: the initial population, then `generations − 1` generations of `offspring` children."""
+        return self.strategy.population + (self.budget.generations - 1) * self.strategy.offspring
+
+    @property
+    def max_steps(self) -> int:
+        return self.world.simulation.max_steps
+
+    def with_generations(self, generations: int) -> "TrainingConfig":
+        """The same run with another budget (the one change a resume allows)."""
+        return _replace_dataclass(self, budget=BudgetConfig(generations))
+
+
+def _replace_dataclass(value: Any, **changes: Any) -> Any:
+    return type(value)(**{**{f.name: getattr(value, f.name) for f in fields(value) if f.init}, **changes})
+
+
+def _coerce(hint: Any, value: Any, key: str) -> Any:
+    """`value` as the type `hint`, or a `ConfigError` naming `key`. TOML gives ints, floats, strings, booleans and lists."""
+    origin, arguments = typing.get_origin(hint), typing.get_args(hint)
+    if origin in (types.UnionType, typing.Union):
+        if value is None and type(None) in arguments:
+            return None
+        (inner,) = [a for a in arguments if a is not type(None)]
+        return _coerce(inner, value, key)
+    if hint is bool:
+        if not isinstance(value, bool):
+            raise ConfigError(f"{key} must be true or false, got {value!r}")
+        return value
+    if hint is int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConfigError(f"{key} must be an integer, got {value!r}")
+        return value
+    if hint is float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError(f"{key} must be a number, got {value!r}")
+        return float(value)
+    if hint is str:
+        if not isinstance(value, str):
+            raise ConfigError(f"{key} must be a string, got {value!r}")
+        return value
+    if origin is tuple:
+        if not isinstance(value, (list, tuple)):
+            raise ConfigError(f"{key} must be a list, got {value!r}")
+        items = typing.cast("list[Any] | tuple[Any, ...]", value)
+        return tuple(_coerce(arguments[0], item, f"{key}[{i}]") for i, item in enumerate(items))
+    raise ConfigError(f"{key} has a type the config cannot read: {hint}")  # pragma: no cover - a programming error
+
+
+def _build(cls: type[Any], data: object, path: str) -> Any:
+    """A dataclass of type `cls` from a TOML table, recursively; defaults for what is missing, errors naming the key."""
+    if not isinstance(data, Mapping):
+        raise ConfigError(f"{path or 'the config'} must be a table, got {data!r}")
+    table = typing.cast("Mapping[str, Any]", data)
+    hints = typing.get_type_hints(cls)
+    known = [f.name for f in fields(cls) if f.init]
+    for key in table:
+        if key not in known:
+            where = f"{path}.{key}" if path else key
+            raise ConfigError(f"unknown key {where!r}: {path or 'the config'} has {known}")
+    values: dict[str, Any] = {}
+    for name in known:
+        if name not in table:
+            continue
+        key = f"{path}.{name}" if path else name
+        hint: Any = hints[name]
+        nested = isinstance(hint, type) and is_dataclass(hint)
+        values[name] = _build(typing.cast("type[Any]", hint), table[name], key) if nested else _coerce(hint, table[name], key)
+    try:
+        return cls(**values)
+    except ValueError as error:
+        message = str(error)
+        raise ConfigError(message if path == "" or message.startswith(f"{path}.") else f"{path}: {message}") from None
+
+
+def parse_config(text: str, *, name: str | None = None) -> TrainingConfig:
+    """A `TrainingConfig` from TOML text; `name` is the default for its `name` (e.g. the file's name)."""
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise ConfigError(f"the config is not valid TOML: {error}") from None
+    if name is not None and "name" not in data:
+        data["name"] = name
+    return typing.cast("TrainingConfig", _build(TrainingConfig, data, ""))
+
+
+def load_config(path: str | Path) -> TrainingConfig:
+    """A `TrainingConfig` from a TOML file; its `name` defaults to the file's name without `.toml`."""
+    file = Path(path)
+    return parse_config(file.read_text(), name=file.stem)
+
+
+def _flat(value: Any, prefix: str = "") -> dict[str, Any]:
+    """A dataclass as `{dotted key: value}`, leaves only."""
+    out: dict[str, Any] = {}
+    for f in fields(value):
+        if not f.init:
+            continue
+        item, key = getattr(value, f.name), f"{prefix}{f.name}"
+        if is_dataclass(item):
+            out.update(_flat(item, f"{key}."))
+        else:
+            out[key] = item
+    return out
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return "inf" if value == math.inf else "-inf" if value == -math.inf else "nan" if math.isnan(value) else repr(value)
+    if isinstance(value, str):
+        return json.dumps(value)  # a TOML basic string: the same escapes as JSON for what names hold
+    if isinstance(value, tuple):
+        return "[" + ", ".join(_toml_value(v) for v in typing.cast("tuple[Any, ...]", value)) + "]"
+    raise TypeError(f"cannot write {value!r} to TOML")  # pragma: no cover - a programming error
+
+
+def dump_config(config: TrainingConfig) -> str:
+    """The effective config as TOML, every field written (defaults included), so that it defines the run on its own. A field
+    that is `None` (`sensing.ray_range`, meaning "the sensing range") is left out, as TOML has no null."""
+    lines = [f"name = {_toml_value(config.name)}"]
+    tables: dict[str, list[str]] = {}
+    for key, value in _flat(config).items():
+        if key == "name" or value is None:
+            continue
+        table, _, leaf = key.rpartition(".")
+        tables.setdefault(table, []).append(f"{leaf} = {_toml_value(value)}")
+    for table, entries in tables.items():
+        lines += ["", f"[{table}]", *entries]
+    return "\n".join(lines) + "\n"
+
+
+def config_differences(recorded: TrainingConfig, given: TrainingConfig, *, ignore: tuple[str, ...] = ("budget.", "name")) -> list[str]:
+    """The keys whose values differ between two configs, as `key: recorded …, given …` lines, except those under `ignore`."""
+    a, b = _flat(recorded), _flat(given)
+    return [
+        f"{key}: recorded {a.get(key)!r}, given {b.get(key)!r}"
+        for key in sorted(set(a) | set(b))
+        if not any(key == i or key.startswith(i) for i in ignore) and a.get(key) != b.get(key)
+    ]
