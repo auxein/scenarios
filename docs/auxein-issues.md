@@ -18,6 +18,28 @@ Each entry has this format:
 
 ---
 
+## 2026-10-16: one Ctrl-C does not stop a batched run
+
+- **Kind:** bug
+- **Symptom:** `box-pushing train` (a batched `EpisodeEvaluator`, inline) went on training after Ctrl-C, generation after
+  generation; only a second Ctrl-C stopped it, in the middle of a generation. `auxein.run` drives its loop with
+  `asyncio.run`, which turns the first Ctrl-C into a cancellation of the driver's task, delivered only when the task next
+  yields to the event loop; the live loop yielded only while replaying (`_step`: `if recorded: await asyncio.sleep(0)`), and
+  an evaluator that computes on the driver's thread never yields, so the cancellation waited for the end of the run. Auxein's
+  own interrupt tests raise `KeyboardInterrupt` from an evaluator or a callback, never a real SIGINT.
+- **Minimal reproduction** (in a clone of Auxein): a recorded `auxein.run` of the team fixture (`tests/support/team.py`) with a
+  large budget, in a subprocess started with SIGINT at its default; send it one SIGINT after 3 s: it is still running 10 s
+  later; a second SIGINT stops it (status `interrupted`).
+- **Auxein branch / PR:** `fix/ctrl-c-between-batches` (pushed; https://github.com/auxein/auxein/pull/new/fix/ctrl-c-between-batches):
+  the driver yields to the event loop after every tell, so one Ctrl-C stops a run after the batch in progress, recorded as
+  interrupted with a checkpoint. Regression tests in `tests/driver/run_recording_test.py` (a cancellation during a batch, and
+  a real SIGINT to a subprocess); design doc §10.4 and `CHANGELOG.md` (Unreleased) updated.
+- **Status:** fixed in branch `fix/ctrl-c-between-batches`, PR to open; needs a release (suggested `v0.3.3`, with the label fix).
+- **Workaround:** `train.StopOnCtrlC` (`# AUXEIN-WORKAROUND: 2026-10-16: one Ctrl-C does not stop a batched run`): during
+  `box-pushing train`, a SIGINT handler of the scenario's own (which `asyncio.run` leaves alone) asks the run to stop, and a
+  progress callback raises `KeyboardInterrupt` after the generation's tell, which Auxein records as interrupted with a
+  checkpoint; a second Ctrl-C stops at once. Remove the class once the scenarios use the fixed tag.
+
 ## 2026-10-16: a parameterised aggregator source hides its parameters
 
 - **Kind:** bug

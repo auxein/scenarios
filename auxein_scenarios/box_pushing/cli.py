@@ -11,7 +11,17 @@ Commands for watching the world:
 - `box-pushing senses [--count C] [--seed S] [--difficulty easy|full] [--agents N] [--overlay]` renders the senses-only
   controller on generated scenarios (M1b).
 
-All write to `out/` by default, which git ignores. Training from a config, and rendering a recorded run, come with M2 and M3.
+And for training (M2a, `train.py`):
+
+- `box-pushing train CONFIG [--run-dir DIR]` trains a run defined by a TOML config (`configs/` has presets) into
+  `runs/<name>-<timestamp>/` by default; Ctrl-C stops it resumably;
+- `box-pushing train --resume DIR [--generations N] [--config CONFIG]` continues an interrupted run, or extends it (only the
+  budget may change);
+- `box-pushing watch DIR [--generation K] [--scenarios train:0 held:0 ...] [--overlay]` renders the best brain so far, with
+  the run's backend; safe while the run is training.
+
+The watching commands write to `out/` by default and the training ones to `runs/`, both ignored by git. Milestone clips, the
+montage and the charts from a recording come with M3.
 """
 
 import argparse
@@ -21,8 +31,8 @@ from pathlib import Path
 
 from auxein.backend import Backend
 
-from auxein_scenarios.box_pushing import demos, scenarios
-from auxein_scenarios.box_pushing.config import WorldParams
+from auxein_scenarios.box_pushing import demos, scenarios, train
+from auxein_scenarios.box_pushing.config import ConfigError, WorldParams, load_config
 from auxein_scenarios.box_pushing.render import render_gallery
 
 __all__ = ["main"]
@@ -112,6 +122,37 @@ def _senses(args: argparse.Namespace) -> int:
     return 0
 
 
+def _train(args: argparse.Namespace) -> int:
+    try:
+        if args.resume:
+            config = load_config(args.config) if args.config else None
+            train.resume(args.resume, generations=args.generations, config=config)
+        else:
+            if not args.config:
+                raise ConfigError("give a config to train (e.g. configs/pilot.toml), or --resume DIR")
+            if args.generations is not None:
+                raise ConfigError("--generations extends a run on --resume; for a new run, set budget.generations in the config")
+            train.train(load_config(args.config), args.run_dir)
+    except KeyboardInterrupt:
+        where = args.resume or "the run directory printed above"
+        print(f"\ninterrupted: Auxein checkpoints between generations, so the run resumes: uv run box-pushing train --resume {where}")
+        return 130
+    except (ConfigError, train.TrainingError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _watch(args: argparse.Namespace) -> int:
+    try:
+        showcase = [train.Showcase.parse(text) for text in args.scenarios] if args.scenarios else None
+        train.watch(args.run_dir, generation=args.generation, showcase=showcase, overlay=args.overlay, fps=args.fps, speedup=args.speedup)
+    except (ConfigError, ValueError, train.TrainingError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def _clip_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--out", default="out", help="output directory (default: out/)")
     command.add_argument("--fps", type=float, default=30.0, help="frames per second (default: 30)")
@@ -148,6 +189,27 @@ def parser() -> argparse.ArgumentParser:
     senses.add_argument("--overlay", action="store_true", help="draw what agent 0 senses in every panel")
     _clip_options(senses)
     senses.set_defaults(handler=_senses)
+
+    trainer = commands.add_parser("train", help="train a run from a TOML config, or resume one")
+    trainer.add_argument("config", nargs="?", help="the run's config (configs/smoke.toml, pilot.toml, full.toml)")
+    trainer.add_argument("--run-dir", default=None, help="where the run goes (default: runs/<name>-<timestamp>)")
+    trainer.add_argument("--resume", metavar="DIR", default=None, help="continue the run in DIR (interrupted, or to extend it)")
+    trainer.add_argument("--generations", type=int, default=None, help="with --resume: the new budget, to extend the run")
+    trainer.set_defaults(handler=_train)
+
+    watcher = commands.add_parser("watch", help="render a run's best brain so far (safe while it trains)")
+    watcher.add_argument("run_dir", help="the run directory")
+    watcher.add_argument("--generation", type=int, default=None, help="the best up to this generation (default: the last)")
+    watcher.add_argument(
+        "--scenarios",
+        nargs="+",
+        default=None,
+        help="showcase scenarios, train:<i> or held:<i> (default: the first easy and full, 2 held-out)",
+    )
+    watcher.add_argument("--overlay", action="store_true", help="draw what agent 0 senses")
+    watcher.add_argument("--fps", type=float, default=30.0, help="frames per second (default: 30)")
+    watcher.add_argument("--speedup", type=float, default=2.0, help="simulated seconds per video second (default: 2)")
+    watcher.set_defaults(handler=_watch)
 
     gallery = commands.add_parser("scenarios", help="render a gallery of generated scenario layouts")
     gallery.add_argument("--difficulty", choices=sorted(DIFFICULTIES), default="full")
