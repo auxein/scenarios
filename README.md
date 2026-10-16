@@ -8,7 +8,7 @@ for a website and talks, and simple charts.
 
 | Scenario | Status | Design |
 |---|---|---|
-| **Cooperative box-pushing**: a team whose shared brain is evolved by Auxein pushes a box too heavy for any one of them to a target, among obstacles | M1b: sensing, the Auxein environment, brains on their own senses | [`docs/design/box-pushing.md`](docs/design/box-pushing.md) |
+| **Cooperative box-pushing**: a team whose shared brain is evolved by Auxein pushes a box too heavy for any one of them to a target, among obstacles | M2a: fitness, the training config and command, a pilot run | [`docs/design/box-pushing.md`](docs/design/box-pushing.md) |
 
 ## Install
 
@@ -41,6 +41,23 @@ uv run --extra torch box-pushing demo all --backend torch --device mps          
 uv run python -m benchmarks.physics_timing --device mps                         # seconds per physics step
 uv run python -m benchmarks.probe --device mps                                  # seconds per generation, and a recommendation
 ```
+
+## Training
+
+A run is defined by a TOML config (`configs/` has presets; a config lists only what it changes from the design doc's
+defaults). Run directories go to `runs/` (ignored by git). Training defaults to torch on Metal, so install torch first
+(`uv sync --extra torch`); `smoke.toml` runs on numpy.
+
+```
+uv run box-pushing train configs/smoke.toml                   # a few seconds, numpy: a first try
+uv run box-pushing train configs/full.toml                    # the overnight run: 40 agents, population 100, 400 generations
+uv run box-pushing watch runs/full-<timestamp>                # the best brain so far, as MP4 (safe while it trains)
+uv run box-pushing train --resume runs/full-<timestamp>       # after Ctrl-C (which stops after the current generation)
+uv run box-pushing train --resume runs/full-<timestamp> --generations 600   # extend it
+```
+
+`runs/<run>/progress.csv` is rewritten after every generation (best and mean score, success rate, `max_pushers`...), so a
+run can be charted while it goes on.
 
 ## Checks
 
