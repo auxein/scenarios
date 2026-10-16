@@ -1,6 +1,6 @@
 # Cooperative box-pushing: design
 
-**Status:** Draft for review · **Date:** 2026-10-14 · **Auxein:** `v0.3.2` · **Milestone:** M1a (physics, scenario generator, viewer)
+**Status:** Draft for review · **Date:** 2026-10-16 · **Auxein:** `v0.3.2` · **Milestone:** M1b (sensing, the Auxein environment, brains on their own senses, the probe)
 
 ---
 
@@ -94,7 +94,7 @@ Episodes end early on delivery (§4.4), but a batched world cannot drop a scenar
 
 ### 2.9 What `run_batch` returns, and rendering
 
-`run_batch(agents, scenarios, rng)` returns an `EpisodeBatchResult` of **raw measurements** (§5.2), each an `(n, s)` array on the backend, as Auxein's environments do: the score is the aggregator's (§5.1). For rendering (§7), the same simulation can be run for one genome on a few scenarios with a hook that records the states at every step (positions, headings, the box's pose); one code path serves training and rendering, so the clips show what was scored. Built at M1a: `simulate(..., hook=TrajectoryRecorder(), every=k)` copies the state to host numpy arrays every `k`th step, and the renderer draws the resulting `Trajectory`.
+`run_batch(agents, scenarios, rng)` returns an `EpisodeBatchResult` of **raw measurements** (§5.2), each an `(n, s)` array on the backend, as Auxein's environments do: the score is the aggregator's (§5.1). For rendering (§7), the same simulation can be run for one genome on a few scenarios with a hook that records the states at every step (positions, headings, the box's pose); one code path serves training and rendering, so the clips show what was scored. Built at M1a: `simulate(..., hook=TrajectoryRecorder(), every=k)` copies the state to host numpy arrays every `k`th step, and the renderer draws the resulting `Trajectory`, for the scripted controllers that read the true state. **Built at M1b** (§2.11): `BoxPushingWorld.run`, the step loop of `run_batch` and `run_episode`, takes a hook that sees each step's state with what the agents sensed in it, and `BoxPushingWorld.watch` records both for clips of brains (`WatchRecorder`), so a clip of a brain is the episode that would be scored.
 
 ### 2.10 The physics core as built (M1a)
 
@@ -108,11 +108,26 @@ M1a builds the physics as a pure, batched core in `world.py`, separate from Auxe
 - **Scripted controllers** (`scripted.py`) drive the core from the true state for tests and demos: `idle`, `constant`, `go_to` and `push` (agents queue in columns behind the box's far side from a goal and push toward it; naive, it ignores obstacles). With 20 agents it delivers the box within the 600-step limit in 10 of 16 easy scenarios and 5 of 16 full ones (seed 1), the rest ending 1 to 4 units short (§10.2).
 - **The checks it passes** (`tests/box_pushing/world_test.py`, on numpy float64 and torch float32): `k − 1` agents leave the box at rest and `k` move it, for `k` = 2, 3 and 4; `k − 1` agents cannot keep a moving box moving; an off-centre push turns the box the right way and a centred one does not turn it; no agent passes through a wall at full speed, and neither agents nor the box pass through a 0.5-thick obstacle; with thrust, drag and damping off, collisions conserve momentum and never add kinetic energy; 100 agents crowding the box with random actions for 2,000 steps stay finite in float32 (numpy and torch); delivery freezes its scenario while the others go on; trajectories are identical run to run, identical whether a scenario runs alone or in a batch (bit for bit on numpy, within 1e-3 on torch float32) and whatever the obstacle padding.
 
+### 2.11 The environment as built (M1b)
+
+`environment.py` wraps the physics core and the sensors (§3) as an Auxein environment. **`BoxPushingWorld(params, sensing, steps=None, backend=None)`** implements both of Auxein's interfaces, so `EpisodeEvaluator(brain, world, training_set, aggregator)` works on either path:
+
+- **`run_batch(agents, scenarios, rng)`**, the batched path (taken when the decoder has `decode_batch`): every candidate on every scenario at once, measurements as `(n, s)` arrays on the backend. `agents` is anything with `act_batch` (Auxein's `BatchPolicy`), not only `MLPPolicy`'s networks: the scripted policies of the tests and demos use it too. The world simulates where the agents are: it reads the backend from `MLPAgentBatch`'s weights (or a policy's `backend`, or the world's `backend=`) and the batch size from `n`, since Auxein's interface carries neither (§10.5).
+- **`roles = ("team",)` and `run_episode(agents, scenario, rng)`**, the per-episode path `EpisodeEvaluator` requires of every environment: the same loop with `n = 1, s = 1`, the agent's `act` applied to the team's `(N, 43)` observations, on the world's `backend=` (numpy float64 by default). The two paths agree: `EpisodeEvaluator` on either finds the same best candidate, with the same objective, along the same trace, on numpy float64 (the brain's products are grouped differently, a few ulps apart).
+- **One step loop**, `BoxPushingWorld.run(act, layout, n, hook=None)`: observe the state at the start of the step (§3), `act(observations)`, one physics step; at most `steps` steps (600 by default), ending early once every scenario of every candidate is done (one host read per step). The hook sees each step's starting state with its senses, then the final state.
+- **No randomness** (§4.1): `rng` is accepted, as the interfaces require, and unused; a test checks that two streams give the same numbers.
+- **The layout cache.** The padded `Layout` of a scenario sequence is built once and kept (the four most recent) by the scenarios' fingerprint (ids, seeds and params, as `ScenarioSet` computes it) and the backend. Not by ids alone: two training sets of different seeds share their ids (`train-0000`...).
+- **Failures.** After every step, a scenario whose state is no longer finite (a physics blow-up, or a policy returning NaN) is **frozen at its last finite state** and marked done, so it cannot poison the rest of the batch or delay the early stop; `run_batch` reports it in `EpisodeBatchResult.failures` as `FAILED`, with an error naming the scenario and the step. Auxein then fails that candidate's evaluation (core design §6.6), records the episode, and the run goes on. Its measurements are finite but meaningless, and ignored.
+- **The brain**, `environment.brain(sensing, hidden=(32,))`: `MLPPolicy(43, (32,), 2, activation="tanh", output="tanh")`, its sizes from the observation layout (the smoke test takes them from there, M1b).
+- **The checks it passes** (`tests/box_pushing/environment_test.py`, `auxein_test.py`): the six measurements as `(n, s)` arrays on the backend and device; the paths agree; the layout is built once for repeated calls; early stop; the M1a push team, driven through the loop, delivers what `simulate` delivers at the same step and to the same final distance; `max_pushers` and `approach` against hand-built scenes; a NaN action fails only its scenario, on both paths; a two-generation `auxein.run` with `RandomSearch`, a placeholder aggregator (defined in the tests only; the real one is M2's) and recording on completes, and every recorded episode holds the six measurements; the same genomes give the same measurements twice, a candidate gets the same alone as in a batch, and a scenario the same whatever its place in the set (bit for bit on numpy; within 1e-3 on torch float32, though they were identical on this machine's CPU). On numpy float64 and torch float32.
+
 ---
 
 ## 3. Agents: sensing and acting
 
 **All sensing is local and in the agent's own frame** (bearings relative to its heading), **except the target**, which every agent knows. Every input is normalised to roughly `[-1, 1]` or `[0, 1]`, since the network's initial weights assume inputs of unit scale (`MLPPolicy.space`, core design §6.2).
+
+**Built at M1b** (`sensors.py`, `SensingParams` in `config.py`), as designed here, with no change of decision; §3.8 has the details the design left open. **Sensing runs once per episode step**, on the state at the start of the step (not per physics substep).
 
 ### 3.1 Target (3 values)
 
@@ -159,6 +174,32 @@ The agent's own forward speed and turning rate, each normalised by its maximum.
 | **observation size** | **43** |
 
 With one hidden layer of 32 units and 2 outputs, the genome is `43 × 32 + 32` (hidden layer) `+ 32 × 2 + 2` (output layer) = **1,474 weights** (`MLPPolicy(43, (32,), 2, output="tanh").dim`; checked by the scaffold's smoke test). It is laid out as Auxein's `MLPPolicy` lays it out (core design §6.2), and searched in `policy.space(scale)`, whose fan-in–scaled bounds make the GA's uniform first generation a Glorot-like initialisation.
+
+### 3.8 Sensing as built (M1b)
+
+**The observation layout is defined once**, in `sensors.observation_layout(sensing)`: the named parts of the vector, their slices and sizes (derived from `SensingParams`: `rays = 12`, `range = 5`, `ray_range = None` (the same as `range`), `sectors = 8`), and the range of each. The environment, the senses-only controller, the overlay and the smoke test read it from there.
+
+| Part | Slice | Values | Range |
+|---|---|---|---|
+| `target_distance` | 0 | the distance to the target over the arena's diagonal (28.3) | `[0, 1]` |
+| `target_bearing` | 1–2 | `(sin, cos)` of the bearing to the target | `[-1, 1]` |
+| `ray_distance` | 3–14 | per ray, the distance to the nearest wall, obstacle or box over the ray range; 1 for nothing in range | `[0, 1]` |
+| `ray_box` | 15–26 | per ray, 1 if what it hit first is the box | `{0, 1}` |
+| `box_flag` | 27 | 1 if the box's centre is within `r` | `{0, 1}` |
+| `box_distance` | 28 | the distance to the box's centre over `r` | `[0, 1)` |
+| `box_bearing` | 29–30 | `(sin, cos)` of the bearing to the box's centre | `[-1, 1]` |
+| `box_heading` | 31–32 | `(sin 2θ, cos 2θ)`, `θ` the box's heading less the agent's | `[-1, 1]` |
+| `teammates` | 33–40 | per sector, `1 − e^(−x)`, `x = Σ (1 − d / r)` over the teammates within `r` in it | `[0, 1)` |
+| `speed` | 41 | forward speed over the maximum speed, clipped | `[-1, 1]` |
+| `turn` | 42 | turning rate over the maximum turning rate, clipped | `[-1, 1]` |
+
+The box cue's five values after the flag are 0 when the box is out of range. Details the design left open, decided at M1b:
+
+- **Frames.** Bearings are counter-clockwise from the heading. Ray `k` points at `2πk / 12` (ray 0 straight ahead); sector `k` is centred on `2πk / 8` (sector 0 straight ahead, each 45° wide).
+- **Rays start at the agent's centre** (an agent touching a wall reads 0.05) and **report 0 from inside a shape** (an agent pressed slightly into an obstacle). They are cast by the slab method against the arena (from inside), the axis-aligned rectangles and the box (in its frame), and by the quadratic against circles (`geometry.ray_*`, M1b); a ray grazing an edge, a corner or a circle hits it.
+- **Speed is clipped** to `[-1, 1]`: reverse thrust tops out at −0.5, but a contact can push an agent faster than its top speed for a moment.
+- **Cost.** The rays are `(n, s, N, 12)` arrays, cast slot by slot against the padded obstacles (an exact minimum, so padding does not change a reading); the teammates are `(n, s, N, N)` arrays: **pairwise distances once per step**, shared by the weights and the sectors, summed per sector in a loop over the 8 sectors (rather than a one-hot `(n, s, N, N, 8)` array, eight times the memory). Sensing costs more than the physics (§10.3).
+- **What the tests pin** (`tests/box_pushing/sensors_test.py`, on numpy float64 and float32 and torch float32): the bearing to the target in the agent's frame, rotating back as the agent turns; rays hitting a wall, an obstacle and the box with the right flag, an obstacle hiding the box, nothing in range reading 1; the box cue on within `r` and all zeros beyond; the relative heading identical for the box at `θ` and `θ + π`; one teammate 0.5 ahead reading 0.59 in sector 0, a crowd of ten above 0.99, an agent never sensing itself, sectors turning with the agent; proprioception normalised; every value within its range on random states; an agent's observation independent of the batch and of the obstacle padding (bit for bit on numpy). The ray casts have their own hand-computed tests (`tests/common/geometry_test.py`).
 
 ---
 
@@ -225,7 +266,13 @@ As Auxein's design asks (core design §6.2), **the world returns raw measurement
 | `initial_distance` | the box's initial distance to the target |
 | `final_distance` | its distance at the end (at delivery, if delivered) |
 | `approach` | the approach term's value (§5.1) |
-| `max_pushers` *(proposed)* | the largest number of agents touching the box at once: a direct measure of cooperation, for the charts |
+| `max_pushers` | the largest number of agents touching the box at once: a direct measure of cooperation, for the charts |
+
+**Built at M1b** (`environment.py`, §2.11), as raw `(n, s)` arrays on the backend, in the run's float dtype:
+
+- `delivered` is the `done` mask of a scenario that did not fail; `steps` the state's step counter, which stops on delivery (§2.8), so it is the delivery step or the steps simulated; `initial_distance` and `final_distance` are the box's centre to the target's, at the start and at the end (frozen at delivery).
+- **`approach`** is §5.1's mean over agents of `1 − min(1, d_min / r)`, with `d_min` the running minimum, from the initial state on, of the **gap between the agent's disc and the box's surface** (its centre's distance to the surface less its radius, at least 0), so that an agent pressed against the box scores 1 rather than 0.95. Whether the term should count in the score, and how much, is still item 11 (§10.6).
+- **`max_pushers`** is the running maximum, from the initial state on, of the number of agents whose gap is at most 0.02 (the renderer's "touching", `TOUCH_TOLERANCE`). **Decided at M1b** (item 12): it costs one `(n, s, N)` comparison per step. It counts **contacts, not contributions**: agents queued behind others push through them (§2.4), so a delivering team may touch the box with as few as two agents (the M1a push team, seen in a test). The chart should be read as "agents at the box", and a column of pushers counts once per contact.
 
 The aggregator's **descriptors** carry the per-run summaries the charts and the early stop need: the success rate (mean of `delivered`), the mean progress, the mean approach and the mean of `max_pushers`.
 
@@ -236,7 +283,7 @@ The aggregator's **descriptors** carry the per-run summaries the charts and the 
 - **Strategy.** **`GeneticAlgorithm`** is the main strategy: a population evolving is the clearest story. **`PycmaStrategy`** (CMA-ES) on the same setup is a comparison run (M4); §10.6 notes its limits at 1,474 dimensions.
 - **Driver settings.** Generation delivery, deterministic mode, recording on (`run_dir`), progress printed with `auxein.callbacks.print_progress`, and an optional **early stop when the held-out success rate passes a threshold**: a callback that, every few generations, evaluates the current best on the held-out set and returns `StopRun` (§10.6 notes what has to be checked first).
 - **The evaluator.** `EpisodeEvaluator(policy, world, training_set, aggregator)`, which takes Auxein's batched path because the world has `run_batch`, `MLPPolicy` has `decode_batch` and the GA's batches are arrays.
-- **Backend.** numpy float32 or torch float32 on Metal; the choice is made at M1b from the full probe (§9). M1a's timing of the physics alone already points to torch on Metal (§10.3).
+- **Backend.** **torch float32**: on Metal if the owner's probe run confirms it (expected, §10.3), else on the CPU, where the full probe (M1b) fits 20 agents at 100 × 16 in 53 s per generation. numpy stays the backend of tests and clips.
 - **A command-line tool** trains from a TOML config, reproducible from its seed: the config fixes the world, the team, the sensing, the network, the scenario sets, the fitness weights, the strategy, the budget and the backend, and is copied into the run directory.
 
 ---
@@ -254,6 +301,8 @@ The aggregator's **descriptors** carry the per-run summaries the charts and the 
   - **Type:** a small tracked uppercase label, a light headline (Inter Tight Light) and a muted lead (Inter Light) above the panels; small tracked captions in each panel. Inter and Inter Tight are bundled (`common/fonts/`, SIL Open Font License), so videos look the same on every machine, CI included.
   - **Depth:** the floor is lit faintly at its centre and dithered so that the shallow gradient does not band.
   - **No branding** in the videos.
+- **The sensing overlay** (M1b, `render.py`), optional per clip, for one or a few chosen agents, recorded by the same step loop that scores an episode (`WatchRecorder`), in the same monochrome theme: the watched agent bright white inside its **sensing circle** (dashed, with ticks at the sector boundaries); its **rays**, faint lines ending in a dot where they hit, **bright white on the box** and steel on a wall or an obstacle (no dot when nothing is in range), rays on the box drawn brighter; the **box cue**, a line to the box's centre while the box is in range; and the **teammates it senses**, joined to it by lines as bright as their weight `1 − d / r`: the faint links of M1a, now meaning "sensed", replacing the proximity links while the overlay is on. The overlay is clipped to the arena.
+- **Panels are cells**, a candidate on a scenario: the demos show one candidate on several scenarios, the brains clip several candidates (random brains) on one scenario.
 - **Format:** MP4, drawn with matplotlib and encoded by ffmpeg. ffmpeg comes from the `imageio-ffmpeg` wheel, which ships a static binary for macOS and Linux; matplotlib's `FFMpegWriter` is pointed at it, so no system ffmpeg is needed and `uv sync` alone is enough on a Mac and in CI.
 - **Charts:** fitness over generations from `RunReader.generation_history()` (best, mean and median per generation), and the success rate and `max_pushers` from the recorded descriptors.
 
@@ -264,31 +313,34 @@ The aggregator's **descriptors** carry the per-run summaries the charts and the 
 ```
 auxein_scenarios/
   common/                 # helpers shared by the scenarios
-    geometry.py           # 2-D geometry on batched arrays: frames, rectangle contacts, corners (ray casts: M1b)
+    geometry.py           # 2-D geometry on batched arrays: frames, rectangle contacts, corners, ray casts
     rendering.py          # matplotlib + ffmpeg: figures, frame timing, MP4 and PNG (overlays, montage: M3)
     theme.py              # the look: colours, fonts, agent glyph, floor (§7)
     fonts/                # Inter and Inter Tight, with their licences
     runs.py               # run directories and opening their recordings
     cli.py                # config loading, backend choice, common options
   box_pushing/            # this scenario
-    world.py              # the physics core: layout, state, step, runner, trajectories (§2.10); run_batch from M1b
+    world.py              # the physics core: layout, state, step, runner, trajectories (§2.10)
     contacts.py           # the penalty contact model, every pair (§2.6)
-    scripted.py           # scripted controllers from the true state, for tests and demos (§2.10)
-    sensors.py            # the observation vector (§3)
+    environment.py        # BoxPushingWorld: run_batch, run_episode, the step loop, measurements, failures (§2.11); the brain
+    scripted.py           # scripted controllers (true state) for tests and demos; the senses-only controller (§10.1)
+    sensors.py            # the observation layout and batched sensing (§3.8)
     scenarios.py          # the scenario generator, difficulties, training and held-out sets (§4)
     fitness.py            # measurements to score: the Aggregator (§5)
     config.py             # the world's parameters and derived quantities (§2); the TOML training config from M2 (§6)
     train.py              # building the run and running Auxein (§6)
-    render.py             # clips and galleries (M1a); milestones, montage and charts from a recording (M3, §7)
-    demos.py              # the demo scenes of M1a
-    cli.py                # the command-line tool: box-pushing demo ..., box-pushing scenarios ...
-benchmarks/               # scripts run by hand: physics_timing.py (M1a)
+    render.py             # clips, galleries and the sensing overlay; milestones, montage and charts from a recording (M3, §7)
+    demos.py              # the demo scenes; clips of random brains and of the senses-only controller (M1b)
+    cli.py                # box-pushing demo ..., scenarios ..., brains ..., senses ...
+benchmarks/               # scripts run by hand: physics_timing.py (M1a), probe.py (M1b, §10.3)
 tests/                    # smoke_test.py, common/, box_pushing/
 docs/design/              # one design document per scenario
 docs/auxein-issues.md     # the log of Auxein bugs and requests found here
 ```
 
-`contacts.py` and `config.py` were added to the module list this design was given (decided, §10.6): the contact model is the largest and riskiest part of the physics, and the parameters are shared by the world, training, rendering and the held-out report. M1a added `scripted.py` (test and demo tools, not part of training) and `demos.py`.
+`contacts.py` and `config.py` were added to the module list this design was given (decided, §10.6): the contact model is the largest and riskiest part of the physics, and the parameters are shared by the world, training, rendering and the held-out report. M1a added `scripted.py` (test and demo tools, not part of training) and `demos.py`. **M1b added `environment.py`**: the environment is more than the physics (sensing, the brain's loop, measurements, failures), and keeping it out of `world.py` keeps the physics core free of sensors and networks, as M1a built it.
+
+**Commands added at M1b** (clips to `out/`): `box-pushing brains [--count C] [--seed S] [--difficulty easy|full] [--agents N] [--overlay]` (random brains, one panel each, on one scenario: the clueless start), `box-pushing senses [...]` (the senses-only controller, one scenario per panel) and `box-pushing demo sensing` (one agent turning on the spot beside the box, an obstacle and moving teammates, with its overlay). Each prints every panel's measurements.
 
 **Adding a second scenario:** a subpackage `auxein_scenarios/<name>/`, its design document `docs/design/<name>.md`, its tests `tests/<name>/`, and an entry in the README's scenario list. A helper starts in its scenario and moves to `common/` when a second scenario needs it, not before.
 
@@ -299,8 +351,8 @@ docs/auxein-issues.md     # the log of Auxein bugs and requests found here
 - **M0** (done): the design document and the repository scaffold.
 - **M1** is split in two, each ending with something to run and watch:
   - **M1a** (done): the physics core (bodies, contacts, friction, integration, delivery), the scenario generator, and a viewer: MP4 demo clips driven by scripted controllers that use the true state, and PNG galleries of layouts (`uv run box-pushing demo all`, `uv run box-pushing scenarios`); physics tests (§2.10); a quick timing of the physics (§10.3).
-  - **M1b:** sensors and observations (§3), the Auxein `BatchedEnvironment` (`run_batch`, measurements), random `MLPPolicy` brains acting on their own senses, a clip with a sensing overlay, determinism end to end, and the full performance probe that picks the backend.
-- **M2:** fitness, the training CLI and config, recording, first trained runs.
+  - **M1b** (done): sensors and the observation layout (§3.8), the Auxein environment `BoxPushingWorld` with both paths, the layout cache, measurements and episode failures (§2.11, §5.2), random `MLPPolicy` brains and a senses-only controller acting on their own senses through the same step loop (`uv run box-pushing brains`, `box-pushing senses`), the sensing overlay (`--overlay`, `box-pushing demo sensing`), determinism end to end, and the full performance probe (§10.3).
+- **M2:** fitness, the training CLI and config, recording, first trained runs. **It starts from:** `EpisodeEvaluator(brain(), BoxPushingWorld(...), training_set, aggregator)` on the batched path, already exercised by a recorded two-generation run with a placeholder aggregator; what it adds is the real `Aggregator` (§5.1, items 11 and 13), the TOML config that builds `WorldParams`, `SensingParams`, the sets and the strategy, the training CLI, and the backend and sizes from the probe (§10.3).
 - **M3:** videos and the montage from the recording; the held-out report.
 - **M4:** the CMA-ES comparison and polished clips for the website.
 
@@ -311,6 +363,22 @@ docs/auxein-issues.md     # the log of Auxein bugs and requests found here
 ### 10.1 Scattered starts with a memoryless brain
 
 At full difficulty agents start scattered across a 20 × 20 arena and sense the box only within `r = 5` units: many start out of range, **knowing where the target is but not the box**, and a feed-forward brain cannot remember where it has been. It must find a search behaviour that is a pure function of its senses (follow walls, spread out, drift toward teammates who are near something). The levers, in order: the **mixed-difficulty training set** (easy scenarios start agents in sight of the box, §4.2), the **sensing range** (larger `r`, or rays that see the box farther than the cue), the teammate densities (a crowd is a cue), and as a fallback **recurrent brains** (§3.6). The first runs (M2) will tell whether full-difficulty scenarios are ever solved.
+
+**What the senses-only controller showed (M1b).** `scripted.SensesController` is a hand-written, memoryless policy that sees only the 43 inputs, the same for every agent: when the box cue is on it rebuilds the box's and the target's positions from distances and bearings, and the box's extent from its relative heading, and pushes from behind the box (or goes around it to get there); when only a ray sees the box it steers to that ray; otherwise it **searches by orbiting the target at 9 units**, which passes within sensing range of any box the generator places 6 to 12 units from the target. It is not meant to be good, and it ignores obstacles beyond a little avoidance. On the default training set (`uv run box-pushing senses`, numpy float64, 600 steps):
+
+| team | seed | easy delivered | full delivered |
+|---:|---:|---:|---:|
+| 20 | 1 | 6 / 8 | 3 / 24 |
+| 20 | 2 | 7 / 8 | 1 / 24 |
+| 40 | 1 | 8 / 8 | 8 / 24 |
+| 40 | 2 | 8 / 8 | 10 / 24 |
+
+- **The senses carry what the task needs.** A memoryless policy delivers most easy scenarios and some full ones from scattered starts, so evolution has something to find; nothing is missing from the observation for M2 to start.
+- **Search can be memoryless here**, because the target is always known and the box's distance from it is bounded: orbiting the target is a pure function of the target's distance and bearing. Evolution may or may not find it; the levers of the first paragraph stay.
+- **Teammates can be a trap.** A first version turned searching agents toward their teammates (a crowd may be at the box); agents far from the box instead trapped each other in small spinning clusters, and it delivered 1 of 24 full scenarios. Random and early brains may fall into the same attractor.
+- **A larger team does much better** (more searchers, more pushers): 40 agents delivered three times as many full scenarios as 20. Together with the step limit (§10.2), that argues for 40 agents in M2 if the cost allows (§10.3).
+- **What stops it:** easy scenarios it misses end 60 % of the way, out of time (the tight step limit of §10.2); full ones fail on boxes against walls or obstacles (it cannot get behind them), on searchers piling up along a wall where the orbit meets it, and on time.
+- **Random brains** (`uv run box-pushing brains`, six on an easy scenario, 20 agents): they wander, circle and crowd; several bring agents to the box (up to 8 touching at once) and one moved it a little, none delivered: lively enough for a "clueless start", with a gradient for the approach term.
 
 ### 10.2 Physics
 
@@ -335,6 +403,44 @@ At full difficulty agents start scattered across a 20 × 20 arena and sense the 
 
 The earlier back-of-envelope (about 2 minutes per generation on numpy at 40 agents) was close (3 minutes). **Torch on Metal is 4 to 16 times faster than numpy**, and keeps 40 agents within the budget with room for sensing and the policy, and even 100 agents near it; numpy is fine for 20 agents and for tests. Sensing (M1b) adds another pairwise term (teammate sectors) and the rays, so the full probe (M1b) decides the defaults: population, scenarios per generation, team size and backend.
 
+**The full probe (M1b)**, `uv run python -m benchmarks.probe`: the whole episode loop, sensing, the brain and the physics, with random brains sampled from `MLPPolicy.space()` (the GA's first generation, which never delivers, so every one of the 600 steps is simulated: an upper bound), the scenarios a quarter easy and the rest full. Each part is timed on its own, with the device synchronised around it; "loop" is `BoxPushingWorld.run` itself (which also tracks the measurements, the non-finite check and the early stop), and a generation is the loop's time per step × 600. Peak memory is numpy's, through `tracemalloc` (torch does not report it on the CPU). On the CPU of the same Apple M4 Pro (torch 2.14 with 8 CPU threads), in seconds per step:
+
+| backend | agents | n × s | sensing | brain | physics | loop | **s / generation** | peak MB |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| numpy float32 | 20 | 50 × 16 | 0.046 | 0.002 | 0.028 | 0.060 | **36** | 56 |
+| torch float32 CPU | 20 | 50 × 16 | 0.032 | 0.002 | 0.019 | 0.048 | **29** | |
+| numpy float32 | 20 | 100 × 16 | 0.136 | 0.005 | 0.063 | 0.138 | **83** | 111 |
+| torch float32 CPU | 20 | 100 × 16 | 0.053 | 0.003 | 0.039 | 0.089 | **53** | |
+| numpy float32 | 20 | 100 × 32 | 0.284 | 0.007 | 0.110 | 0.311 | **187** | 223 |
+| torch float32 CPU | 20 | 100 × 32 | 0.145 | 0.006 | 0.115 | 0.216 | **130** | |
+| numpy float32 | 40 | 50 × 16 | 0.133 | 0.003 | 0.075 | 0.189 | **113** | 154 |
+| torch float32 CPU | 40 | 50 × 16 | 0.076 | 0.004 | 0.052 | 0.110 | **66** | |
+| numpy float32 | 40 | 100 × 16 | 0.280 | 0.007 | 0.165 | 0.396 | **238** | 308 |
+| torch float32 CPU | 40 | 100 × 16 | 0.137 | 0.005 | 0.095 | 0.233 | **140** | |
+| numpy float32 | 40 | 100 × 32 | 0.619 | 0.013 | 0.324 | 0.905 | **543** | 617 |
+| torch float32 CPU | 40 | 100 × 32 | 0.194 | 0.009 | 0.136 | 0.337 | **202** | |
+| numpy float32 | 100 | 50 × 16 | 0.671 | 0.008 | 0.481 | 1.057 | **634** | 875 |
+| torch float32 CPU | 100 | 50 × 16 | 0.175 | 0.003 | 0.149 | 0.343 | **206** | |
+| numpy float32 | 100 | 100 × 16 | 1.208 | 0.019 | 0.831 | 1.926 | **1,156** | 1,750 |
+| torch float32 CPU | 100 | 100 × 16 | 0.239 | 0.008 | 0.210 | 0.459 | **275** | |
+| numpy float32 | 100 | 100 × 32 | 2.662 | 0.031 | 2.268 | 4.335 | **2,601** | 3,500 |
+| torch float32 CPU | 100 | 100 × 32 | 0.400 | 0.019 | 0.380 | 0.815 | **489** | |
+
+- **Sensing costs as much as the physics, or more** (about twice on numpy at 20–40 agents): the rays are `(n, s, N, 12)` arrays cast against every padded obstacle slot, and the teammate sectors a pass over the `(n, s, N, N)` pairs per sector. The brain is negligible (1–3 %). If sensing has to get cheaper, the levers are fewer rays, casting rays only against the obstacles within range, and the sectors from one pass (an integer sector index and eight masked sums share the pairs already).
+- **Torch on the CPU is 1.2 to 5 times faster than numpy**, more as the team grows (numpy is single-threaded for these element-wise operations).
+- **The probe's recommendation on the CPU:** torch float32 on the CPU, **20 agents, a population of 100, 16 scenarios per generation: 53 s per generation**. Nothing at 40 agents fits a minute on the CPU (66 s at 50 × 16 is the nearest). numpy stays the backend of tests and clips.
+- **Metal (to be filled in by the owner):** `uv run python -m benchmarks.probe --device mps --no-cpu-torch` on the M4, and paste its table and recommendation here.
+
+  > **Metal numbers: pending (owner's run).**
+  >
+  > | backend | agents | n × s | sensing | brain | physics | loop | s / generation | peak MB |
+  > |---|---:|---:|---:|---:|---:|---:|---:|---:|
+  > | torch float32 Metal | … | … | … | … | … | … | … | … |
+  >
+  > Recommendation: …
+
+  M1a's physics alone ran 4 to 16 times faster on Metal than numpy (17 s per generation for 40 agents at 100 × 32), so with sensing about doubling the cost, **40 agents at 100 × 16 or 100 × 32 within a minute on Metal is the expectation to check**; it is what the senses-only controller suggests (§10.1). **The M2 default is chosen from the Metal numbers**: 40 agents if they fit, otherwise 20 agents at 100 × 16, the CPU recommendation.
+
 ### 10.4 Recording size
 
 Auxein records every evaluated genome and every episode's measurements. A genome of 1,474 values is 5.9 KB in float32 (11.8 KB in float64), above Auxein's genome-store threshold (4 KB), so each distinct genome is a blob in `events.sqlite`; the GA's children are all distinct, so the store does not shrink them. A run of 300 generations of 100 children is 30,000 genomes, about **180 MB** in float32, plus 30,000 × 32 = 960,000 episode rows of six measurements (about 200 bytes each with keys and index), about **200 MB**: **roughly 0.4 GB per run** (twice that in float64). It matters for disk on a laptop but not for speed (Auxein's reader indexes a 1 GB recording in 0.5 s, core design §10.2), and run directories are never committed (`.gitignore`). Fewer measurements or scenarios are the levers if it does.
@@ -343,11 +449,13 @@ Auxein records every evaluated genome and every episode's measurements. A genome
 
 - **`v0.3.1` reported itself as version `0.3.0`** (fixed in `v0.3.2`). The `v0.3.1` tag's `pyproject.toml` was not bumped, so `auxein.__version__` was `"0.3.0"` when installed from it. Logged in `docs/auxein-issues.md`; the scenarios now depend on `v0.3.2`, and the smoke test checks the tag, the commit (PEP 610 metadata) and the version.
 - **Auxein's test fixtures are not installed with it** (`tests/support/` is outside the wheel), so the minimal reproductions the protocol asks for are written in a clone of Auxein, not here.
+- **M1b drove Auxein's evaluator and driver for real and found no bug.** `EpisodeEvaluator` took the batched path on its own (`MLPPolicy.decode_batch` and `run_batch`) and the per-episode path with a decoder without `decode_batch`; the two agree; a recorded two-generation `auxein.run` with `RandomSearch` completed on numpy float64 and torch float32, with the six measurements per episode in the recording; a NaN action became a failed episode and a failed candidate, as core design §6.6 says.
+- **Feature request: a batched environment cannot learn the batch's size or backend from the protocol** (logged in `docs/auxein-issues.md`). `run_batch` must build its state for `n` candidates on the run's device, but `agents` is opaque and `BatchPolicy` has only `act_batch`. The world reads `MLPAgentBatch`'s `weights` and `n` (as Auxein's own team fixture does) or a policy's `backend` and `n`, a convention for the scenarios' own policies. `n` and `backend` on `BatchPolicy`, or a documented guarantee that `run_batch`'s `rng` is on the run's backend, would remove the convention.
 - **Held-out evaluation during a run** (the early stop, §6) calls `evaluate_held_out` on a run directory that the driver is still writing. Whether that is supported (it reads the recording while the writer holds `writer.lock`; `write=False` avoids `held_out.json`) is to be checked at M2; if not, it is a request to Auxein, and the fallback is to stop on the **training** success rate with `stop_when` (cheap, reproducible, but not the unseen-scenarios claim).
 
 ### 10.6 Proposed details: decided at M1a
 
-Details this design needed but was not first given. **Items 1–10 and 14 were decided at M1a** as written, except 7 and 8, which were decided as their alternatives; items 11–13 stay open (M2 and M4) and keep their *(proposed)* markers above.
+Details this design needed but was not first given. **Items 1–10 and 14 were decided at M1a** as written, except 7 and 8, which were decided as their alternatives; **item 12 was decided at M1b**; items 11 and 13 stay open (M2 and M4) and keep their *(proposed)* markers above.
 
 1. **Decided.** Time step and substeps (§2.1): `dt = 0.05` s per episode step, 2 physics substeps.
 2. **Decided.** Obstacle sizes and the validity check (§2.2): the grid flood fill with obstacles inflated by the box's circumscribed radius (conservative).
@@ -355,11 +463,11 @@ Details this design needed but was not first given. **Items 1–10 and 14 were d
 4. **Decided.** Agent dynamics (§2.5): reverse at half thrust, a first-order lag on turning, strong lateral damping.
 5. **Decided.** Frictionless contacts between bodies, and the corner-penetration model for box–rectangle (§2.6). Added at M1a: a separate, stiffer contact for the box against walls and obstacles, and damping as a ratio of critical.
 6. **Decided.** Input normalisation (§3), **rays do not see teammates** and report 1 for the box, 0 otherwise (§3.2), **the ray range equals the sensing range** (§3.3).
-7. **Decided as `(sin 2θ, cos 2θ)`.** The box's relative heading (§3.3): the box is symmetric under a half turn, so `(sin θ, cos θ)` would give two different inputs for the same situation. The observation size stays 43. Implemented with the sensors (M1b).
-8. **Decided as squashed.** Teammate density (§3.4): each sector's value is `1 − e^(−x)` of the closeness-weighted count `x = Σ (1 − d / r)`, in `[0, 1)` whatever the team size, so "the same brain for any team size" holds for the values as well as the shape. Implemented with the sensors (M1b).
+7. **Decided as `(sin 2θ, cos 2θ)`.** The box's relative heading (§3.3): the box is symmetric under a half turn, so `(sin θ, cos θ)` would give two different inputs for the same situation. The observation size stays 43. Implemented at M1b (§3.8).
+8. **Decided as squashed.** Teammate density (§3.4): each sector's value is `1 − e^(−x)` of the closeness-weighted count `x = Σ (1 − d / r)`, in `[0, 1)` whatever the team size, so "the same brain for any team size" holds for the values as well as the shape. Implemented at M1b (§3.8).
 9. **Decided.** Scenario params hold the whole layout (§4.1), and **no noise** in the world in v1 (sensor or actuator noise may help generalisation to unseen layouts).
 10. **Decided.** Full-difficulty box–target distance 6–12 units, **the training mix** 8 easy + 24 full, **64 held-out scenarios**, **target zone radius** 1.5 (§4).
 11. **Open (M2).** The progress clip at −1 and **the approach term's definition** (§5.1); whether the approach term should fade out over generations (Auxein's aggregator is fixed for a run, so that would be a staged run or a request).
-12. **Open (M2).** `max_pushers` as a recorded measurement (§5.2), for the "cooperation emerging" chart.
+12. **Decided at M1b.** `max_pushers` is a recorded measurement (§5.2), for the "cooperation emerging" chart: cheap, and built. It counts agents touching the box, not agents pushing through a queue.
 13. **Open (M4).** CMA-ES at 1,474 dimensions (§6): full-covariance CMA-ES learns its covariance at a rate of about `1/d²`, so in a few hundred generations it barely adapts it, and its `O(d²)` state and eigendecompositions run on the host. The separable variant (pycma's `CMA_diagonal` option, through `PycmaStrategy(options=...)`) is the fairer comparison. `PycmaStrategy` writes no checkpoints, so a resumed comparison run replays from its start.
 14. **Decided.** `contacts.py` and `config.py` as modules (§8); M1a also added `scripted.py` and `demos.py`.
