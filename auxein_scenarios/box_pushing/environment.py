@@ -265,6 +265,22 @@ class BoxPushingWorld:
         }
         return Rollout(state, measurements, failed, failed_step)
 
+    def watch(
+        self,
+        policy: Any,
+        scenarios: Sequence[Scenario],
+        *,
+        agents: Sequence[int] = (),
+        stop_when_done: bool = True,
+    ) -> "tuple[Trajectory, SensingTrace | None, Rollout]":
+        """Runs `policy` (a batch policy, as `run_batch` takes) on `scenarios` through the same step loop as training, recording
+        every step for rendering: the trajectory, what the agents in `agents` sensed (for the overlay; none by default), and the
+        rollout with its measurements. For clips, which show a few candidates on a few scenarios."""
+        backend, n = self._batch_of(policy)
+        recorder = WatchRecorder(agents, self.sensing)
+        rollout = self.run(cast("Act", policy.act_batch), self.layout(scenarios, backend), n, hook=recorder, stop_when_done=stop_when_done)
+        return recorder.trajectory(), recorder.senses(), rollout
+
     # --- Auxein's interfaces ---
 
     def run_batch(self, agents: Any, scenarios: Sequence[Scenario], rng: RandomStream) -> EpisodeBatchResult:

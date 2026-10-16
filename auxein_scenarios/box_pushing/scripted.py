@@ -13,12 +13,15 @@ design and ignores obstacles.
 
 And one that does **not** read the true state (M1b):
 
+- `ConstantPolicy`: fixed actions per agent, as a batch policy (for demos run through the environment's loop);
 - `SensesController`: a policy-like object (`act_batch(observations)`, like a brain) that sees **only the observation vector**
   (design doc §3), a hand-written feasibility check for design doc §10.1.
 """
 
 import math
+from collections.abc import Sequence
 
+import numpy as np
 from auxein.backend import Array, Backend, backend_of
 
 from auxein_scenarios.box_pushing.config import SensingParams, WorldParams
@@ -26,7 +29,7 @@ from auxein_scenarios.box_pushing.sensors import observation_layout
 from auxein_scenarios.box_pushing.world import Controller, Layout, State
 from auxein_scenarios.common.geometry import wrap_angle
 
-__all__ = ["SensesController", "constant", "go_to", "idle", "push", "steer"]
+__all__ = ["ConstantPolicy", "SensesController", "constant", "go_to", "idle", "push", "steer"]
 
 TURN_GAIN = 3.0
 """Turning action per radian of heading error (saturating at ±1, i.e. full turning rate, beyond a third of a radian)."""
@@ -136,6 +139,22 @@ def push(goal_x: Array | None = None, goal_y: Array | None = None, *, spacing: f
         return xp.where(pushing[..., None], drive, go)
 
     return control
+
+
+class ConstantPolicy:
+    """A batch policy that ignores what it senses: agent `i` always acts `actions[i]` (thrust, turning), in every candidate and
+    scenario. For demos that run through the environment's step loop, such as the sensing demo."""
+
+    def __init__(self, actions: Sequence[Sequence[float]], n: int = 1, backend: Backend | None = None) -> None:
+        self.n = n
+        self.backend = backend or Backend("numpy", "cpu", "float64")
+        self._actions = np.asarray(actions, dtype=np.float64).reshape(-1, 2)
+
+    def act_batch(self, observations: Array) -> Array:
+        xp = backend_of(observations).xp
+        actions = self.backend.asarray(self._actions)
+        zero = xp.zeros((*observations.shape[:-1], 2), dtype=observations.dtype, device=self.backend.device)
+        return zero + actions
 
 
 class SensesController:
