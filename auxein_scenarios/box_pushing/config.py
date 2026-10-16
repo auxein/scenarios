@@ -6,6 +6,10 @@ the contact damping) are computed in one place, `WorldParams.derived`, and the *
 the substep (design doc §2.6) is checked when the parameters are built, so that an unstable combination is a clear error before
 anything runs rather than a NaN a thousand steps into a run.
 
+`SensingParams` (M1b) describes what each agent senses (design doc §3): the number of rays and of teammate sectors and the
+sensing range. It sits beside `WorldParams` rather than inside it, because the physics never reads it: the same world can be
+sensed differently, and the observation's size depends on it alone (`sensors.observation_layout`).
+
 TOML loading of the training configuration comes with training (M2); it will build these.
 """
 
@@ -21,6 +25,7 @@ __all__ = [
     "Derived",
     "FrictionParams",
     "STABILITY_LIMIT",
+    "SensingParams",
     "SimulationParams",
     "WorldParams",
 ]
@@ -286,3 +291,45 @@ class WorldParams:
 
 def _float_or_inf(value: Any) -> Any:
     return math.inf if value == "inf" else value
+
+
+@dataclass(frozen=True)
+class SensingParams:
+    """What each agent senses (design doc §3), with the design's defaults.
+
+    - `rays`: range rays, evenly spaced around the agent, the first straight ahead.
+    - `range` (`r`): the sensing range. The box cue is on within it (the box's centre closer than `r`), teammates are counted
+      within it, and distances are normalised by it.
+    - `ray_range`: how far the rays reach; `None` (the default) is `range`. A longer ray range lets rays see the box beyond the
+      cue, one of the levers of design doc §10.1.
+    - `sectors`: teammate sectors around the agent, the first centred straight ahead.
+
+    Sensing runs once per episode step, on the state at the start of the step (not per physics substep).
+    """
+
+    rays: int = 12
+    range: float = 5.0
+    ray_range: float | None = None
+    sectors: int = 8
+
+    def __post_init__(self) -> None:
+        if self.rays < 1 or self.sectors < 1:
+            raise ValueError(f"rays and sectors must be at least 1, got {self.rays} and {self.sectors}")
+        if not self.range > 0 or (self.ray_range is not None and not self.ray_range > 0):
+            raise ValueError(f"range and ray_range must be positive, got {self.range} and {self.ray_range}")
+
+    @property
+    def reach(self) -> float:
+        """The rays' range: `ray_range`, or `range` when it is not set."""
+        return self.range if self.ray_range is None else self.ray_range
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SensingParams":
+        known = {f.name for f in fields(cls)}
+        unknown = set(data) - known
+        if unknown:
+            raise ValueError(f"unknown sensing parameters {sorted(unknown)}: use {sorted(known)}")
+        return cls(**data)

@@ -8,7 +8,7 @@ for a website and talks, and simple charts.
 
 | Scenario | Status | Design |
 |---|---|---|
-| **Cooperative box-pushing**: a team whose shared brain is evolved by Auxein pushes a box too heavy for any one of them to a target, among obstacles | M1a: physics, scenario generator and viewer | [`docs/design/box-pushing.md`](docs/design/box-pushing.md) |
+| **Cooperative box-pushing**: a team whose shared brain is evolved by Auxein pushes a box too heavy for any one of them to a target, among obstacles | M1b: sensing, the Auxein environment, brains on their own senses | [`docs/design/box-pushing.md`](docs/design/box-pushing.md) |
 
 ## Install
 
@@ -26,16 +26,20 @@ Auxein is a git dependency pinned to a release tag (`[tool.uv.sources]` in `pypr
 
 ## Watching the box-pushing world
 
-The physics and the scenario generator can be watched before anything is trained: demo clips driven by scripted controllers,
-and galleries of generated layouts. Output goes to `out/` (ignored by git).
+The world can be watched before anything is trained: demo clips driven by scripted controllers, galleries of generated
+layouts, and policies acting on their own senses (random brains, a hand-written senses-only controller), with an optional
+overlay of what one agent senses. Output goes to `out/` (ignored by git).
 
 ```
 uv run box-pushing demo all                                   # every demo clip, as MP4
-uv run box-pushing demo threshold                             # one of: threshold, rotation, obstacles, crowd, walls, delivery
+uv run box-pushing demo threshold                             # one of: threshold, rotation, obstacles, crowd, walls, delivery, sensing
 uv run box-pushing demo crowd --agents 100                    # the team size, for crowd, walls and delivery
 uv run box-pushing scenarios --difficulty full --seed 1 --count 12 --agents 20   # a gallery of layouts, as PNG
+uv run box-pushing brains --overlay                           # random brains, one panel each: the clueless start
+uv run box-pushing senses --difficulty full --agents 40       # the senses-only controller on generated scenarios
 uv run --extra torch box-pushing demo all --backend torch --device mps          # on Metal
 uv run python -m benchmarks.physics_timing --device mps                         # seconds per physics step
+uv run python -m benchmarks.probe --device mps                                  # seconds per generation, and a recommendation
 ```
 
 ## Checks

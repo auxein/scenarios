@@ -1,7 +1,7 @@
 """The scaffold's smoke test: the pinned Auxein is installed, and its `MLPPolicy` acts for a team with the design doc's sizes.
 
-The sizes are those of `docs/design/box-pushing.md` §3.6. They are written out here rather than imported because M0 has no
-sensor code yet; once `sensors.py` defines the observation layout (M1), this test should take them from there.
+The sizes come from where they are defined: the observation from `sensors.observation_layout` (design doc §3.7), the brain
+from `environment.brain` (§3.6). Nothing is written out here, so a change of sensing changes this test with it.
 """
 
 import json
@@ -11,17 +11,17 @@ import auxein
 import numpy as np
 import pytest
 from auxein.backend import Backend
-from auxein.environments import MLPPolicy
 from auxein.random import RandomStream
+
+from auxein_scenarios.box_pushing.environment import ACTIONS, HIDDEN, brain
+from auxein_scenarios.box_pushing.sensors import observation_layout
 
 AUXEIN_TAG = "v0.3.2"
 AUXEIN_COMMIT = "d63e9c77942a912b9243dddfeeff29411da48a93"
 AUXEIN_VERSION = "0.3.2"
 
-OBSERVATION_SIZE = 43  # target 3 + rays 12 × 2 + box cue 6 + teammate sectors 8 + proprioception 2
-HIDDEN = (32,)
-OUTPUTS = 2  # thrust and turning, in [-1, 1]
-GENOME_LENGTH = 1_474  # 43 × 32 + 32, then 32 × 2 + 2
+OBSERVATION_SIZE = observation_layout().size
+OUTPUTS = ACTIONS  # thrust and turning, in [-1, 1]
 
 CANDIDATES, SCENARIOS, AGENTS = 4, 3, 20
 
@@ -50,8 +50,11 @@ def test_auxein_has_what_the_design_relies_on() -> None:
 
 
 def _act(backend: Backend) -> None:
-    policy = MLPPolicy(OBSERVATION_SIZE, HIDDEN, OUTPUTS, activation="tanh", output="tanh")
-    assert policy.dim == GENOME_LENGTH
+    policy = brain()
+    # one hidden layer: its weights and biases, then the output layer's (MLPPolicy's genome layout, design doc §3.7)
+    (hidden,) = HIDDEN
+    assert policy.observation_size == OBSERVATION_SIZE
+    assert policy.dim == OBSERVATION_SIZE * hidden + hidden + hidden * OUTPUTS + OUTPUTS
     rng = RandomStream(np.random.SeedSequence(7), backend)
     # sampled from the policy's own space, as the GA's first generation is
     genomes = policy.space().sample_genomes(CANDIDATES, rng, backend)

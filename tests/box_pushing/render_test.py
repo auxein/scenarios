@@ -1,13 +1,17 @@
 """Rendering smoke tests: a few frames to MP4 through the bundled ffmpeg, a gallery PNG, and the command-line tool."""
 
+import dataclasses
 import math
 from pathlib import Path
 
 import numpy as np
+import pytest
 from auxein.backend import Backend
+from auxein.random import RandomStream
 
 from auxein_scenarios.box_pushing import cli, demos, scenarios, scripted
 from auxein_scenarios.box_pushing.config import WorldParams
+from auxein_scenarios.box_pushing.environment import BoxPushingWorld, brain
 from auxein_scenarios.box_pushing.render import render_clip, render_gallery, touching
 from auxein_scenarios.box_pushing.scenarios import layout_params
 from auxein_scenarios.common.rendering import frame_records, grid_shape
@@ -90,3 +94,45 @@ def test_cli_threshold_demo(tmp_path: Path) -> None:
     assert cli.main(["demo", "threshold", "--out", str(tmp_path), "--fps", "5", "--speedup", "8"]) == 0
     assert (tmp_path / "threshold.mp4").stat().st_size > 1000
     assert math.isfinite(PARAMS.derived.static_force)
+
+
+def test_brains_clip_with_the_overlay(tmp_path: Path) -> None:
+    """Random brains through the environment's step loop, one panel per brain, with what agent 0 senses drawn over each."""
+    backend = Backend("numpy", "cpu", "float64")
+    world = BoxPushingWorld(PARAMS, steps=12)
+    policy = brain()
+    genomes = policy.space().sample_genomes(2, RandomStream(np.random.SeedSequence(1), backend), backend)
+    generated = scenarios.training_set(6, PARAMS, seed=2, mix=((scenarios.EASY, 1),))
+    trajectory, senses, _ = world.watch(policy.decode_batch(genomes), tuple(generated), agents=(0, 3))
+    assert senses is not None and senses.ray_x.shape == (trajectory.records, 2, 1, 2, 12)
+    path = render_clip(
+        trajectory,
+        [dict(generated[0].params)],
+        PARAMS,
+        tmp_path / "brains.mp4",
+        cells=[(0, 0), (1, 0)],
+        labels=["brain 0", "brain 1"],
+        senses=senses,
+        fps=10,
+        speedup=1.0,
+        panel_size=2.0,
+        dpi=60,
+    )
+    assert path.read_bytes()[4:8] == b"ftyp"
+    with pytest.raises(ValueError, match="record both together"):
+        render_clip(
+            trajectory, [dict(generated[0].params)], PARAMS, tmp_path / "x.mp4", senses=dataclasses.replace(senses, ray_x=senses.ray_x[:3])
+        )
+
+
+def test_cli_brains_and_senses(tmp_path: Path) -> None:
+    fast = ["--out", str(tmp_path), "--fps", "4", "--speedup", "15", "--agents", "6", "--count", "2"]
+    assert cli.main(["brains", "--overlay", *fast]) == 0
+    assert (tmp_path / "brains-easy-seed1-overlay.mp4").stat().st_size > 1000
+    assert cli.main(["senses", *fast]) == 0
+    assert (tmp_path / "senses-easy-seed1.mp4").stat().st_size > 1000
+
+
+def test_cli_sensing_demo(tmp_path: Path) -> None:
+    assert cli.main(["demo", "sensing", "--out", str(tmp_path), "--fps", "4", "--speedup", "12"]) == 0
+    assert (tmp_path / "sensing.mp4").stat().st_size > 1000

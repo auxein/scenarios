@@ -18,6 +18,26 @@ Each entry has this format:
 
 ---
 
+## 2026-10-16: a batched environment cannot learn the batch's size or backend from the protocol
+
+- **Kind:** feature request
+- **Symptom:** `BatchedEnvironment.run_batch(agents, scenarios, rng)` must build its state for `n` candidates on the run's
+  backend and device, but nothing in the interface says what `n` or the backend is. `agents` is opaque (`AgentBatch = object`),
+  and `BatchPolicy`, the protocol a batched environment is meant to be written against (core design §6.2), has only
+  `act_batch`. The driver happens to build the batch stream `rng` on the run's backend, but that is not documented. So a
+  batched world reads `MLPAgentBatch`'s own attributes: Auxein's team fixture takes the backend from `agents.weights[0]`
+  (`tests/support/team.py`), and the scenarios do the same, plus `agents.n`. A policy of the world's own (a scripted
+  controller written as a `BatchPolicy`) has to carry `n` and `backend` attributes by convention.
+- **Minimal reproduction:** write `run_batch` for `tests/support/team.py`'s world against `BatchPolicy` only (no `weights`):
+  the initial state `(n, s, agents)` cannot be built before the first `act_batch`, which needs the observations of that state.
+- **What would help** (the owner decides): `n` and `backend` on `BatchPolicy` (`MLPAgentBatch` has `n`, and its backend
+  privately), or a documented guarantee that `run_batch`'s `rng` is on the run's backend (it is, today: `episode-batch` streams
+  use the run's backend).
+- **Auxein branch / PR:** none (a feature request).
+- **Status:** open.
+- **Workaround:** not a workaround of a bug, so not marked: `BoxPushingWorld._batch_of` reads `agents.weights` and `agents.n`
+  (`MLPAgentBatch`), or `agents.backend` and `agents.n` (the scenarios' own policies), or the world's `backend=`.
+
 ## 2026-10-14: v0.3.1 reports version 0.3.0
 
 - **Kind:** bug (release packaging)

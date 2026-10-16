@@ -12,6 +12,10 @@ from auxein_scenarios.common.geometry import (
     half_plane_distance,
     obb_contact,
     obb_corners,
+    ray_aabb,
+    ray_circle,
+    ray_inside_aabb,
+    ray_obb,
     rotate,
     to_frame,
     wrap_angle,
@@ -103,3 +107,82 @@ def test_half_plane_distance(backend: Backend) -> None:
         backend, half_plane_distance(backend.asarray(np.array([3.0, -1.0])), backend.asarray(np.array([0.0, 0.0])), 1.0, 0.0, 2.0)
     )[0]
     np.testing.assert_allclose(got, [1.0, -3.0], atol=tolerance(backend))
+
+
+# --- ray casts ---
+
+MAX = 5.0
+
+
+def rays(backend: Backend, origins: list[tuple[float, float]], angles: list[float]) -> tuple[object, object, object, object]:
+    """Origins and unit directions as backend arrays, one ray per entry."""
+    o = np.asarray(origins, dtype=np.float64)
+    a = np.asarray(angles, dtype=np.float64)
+    return tuple(backend.asarray(v) for v in (o[:, 0], o[:, 1], np.cos(a), np.sin(a)))  # type: ignore[return-value]
+
+
+def test_ray_circle(backend: Backend) -> None:
+    ox, oy, dx, dy = rays(
+        backend,
+        [(-3.0, 0.0), (-3.0, 1.0), (-3.0, 1.0 + 1e-3), (3.0, 0.0), (0.5, 0.0), (-8.0, 0.0), (-3.0, 0.0)],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, math.pi / 2],
+    )
+    c = backend.asarray(np.zeros(7))
+    one = backend.asarray(np.ones(7))
+    (got,) = values(backend, ray_circle(ox, oy, dx, dy, c, c, one, MAX))
+    # straight in: 2; grazing the top: tangent at 3; just above: no hit; pointing away: no hit; from inside: 0;
+    # the circle beyond the maximum range: no hit; passing beside: no hit
+    np.testing.assert_allclose(got, [2.0, 3.0, MAX, MAX, 0.0, MAX, MAX], atol=1e-5)
+
+
+def test_ray_aabb(backend: Backend) -> None:
+    # a 2 × 1 rectangle centred at (2, 0): x in [1, 3], y in [-0.5, 0.5]
+    ox, oy, dx, dy = rays(
+        backend,
+        [(0.0, 0.0), (0.0, 0.5), (0.0, 0.6), (2.0, 3.0), (2.0, 0.0), (4.0, 0.0), (0.0, -2.0), (-5.0, 0.0)],
+        [0.0, 0.0, 0.0, -math.pi / 2, 0.0, 0.0, math.atan2(1.5, 1.0), 0.0],
+    )
+    z = backend.asarray(np.zeros(8))
+    cx, hx, hy = backend.asarray(np.full(8, 2.0)), backend.asarray(np.full(8, 1.0)), backend.asarray(np.full(8, 0.5))
+    (got,) = values(backend, ray_aabb(ox, oy, dx, dy, cx, z, hx, hy, MAX))
+    # straight in: 1; along the top edge: grazing hits at 1; just above: no hit; from above, down: 2.5; from inside: 0;
+    # pointing away: no hit; diagonally into the bottom-left corner (1, -0.5): its distance √(1 + 2.25); beyond range: no hit
+    np.testing.assert_allclose(got, [1.0, 1.0, MAX, 2.5, 0.0, MAX, math.sqrt(3.25), MAX], atol=1e-5)
+
+
+def test_ray_obb_is_the_aabb_in_the_box_frame(backend: Backend) -> None:
+    # a 2 × 1 box at the origin turned by 90°: it spans x in [-0.5, 0.5], y in [-1, 1]
+    ox, oy, dx, dy = rays(backend, [(-3.0, 0.0), (-3.0, 0.9), (-3.0, 1.1), (0.0, -4.0), (0.0, 0.0)], [0.0, 0.0, 0.0, math.pi / 2, 1.0])
+    z = backend.asarray(np.zeros(5))
+    c, s = backend.asarray(np.zeros(5)), backend.asarray(np.ones(5))
+    (got,) = values(backend, ray_obb(ox, oy, dx, dy, z, z, c, s, 1.0, 0.5, MAX))
+    np.testing.assert_allclose(got, [2.5, 2.5, MAX, 3.0, 0.0], atol=1e-5)
+    # at 45°: a point (x, 0) is (x/√2, −x/√2) in the box's frame, inside while |x|/√2 ≤ 0.5 (the half-height binds first),
+    # so a ray along the x axis from (−4, 0) enters at x = −0.5 √2
+    angle = math.pi / 4
+    ox, oy, dx, dy = rays(backend, [(-4.0, 0.0)], [0.0])
+    zero = backend.asarray(np.zeros(1))
+    (got,) = values(backend, ray_obb(ox, oy, dx, dy, zero, zero, zero + math.cos(angle), zero + math.sin(angle), 1.0, 0.5, MAX))
+    np.testing.assert_allclose(got, [4.0 - 0.5 * math.sqrt(2.0)], atol=1e-5)
+
+
+def test_ray_inside_aabb_sees_the_walls_from_within(backend: Backend) -> None:
+    ox, oy, dx, dy = rays(
+        backend, [(0.0, 0.0), (8.0, 0.0), (9.0, 9.0), (0.0, 0.0), (11.0, 0.0)], [0.0, 0.0, math.pi / 4, math.pi / 2, math.pi]
+    )
+    (got,) = values(backend, ray_inside_aabb(ox, oy, dx, dy, 10.0, MAX))
+    # the wall 10 away is beyond range; 2 away; into the corner diagonally: √2; up 10: beyond range; from outside: 0
+    np.testing.assert_allclose(got, [MAX, 2.0, math.sqrt(2.0), MAX, 0.0], atol=1e-5)
+
+
+def test_rays_broadcast_over_a_trailing_ray_axis(backend: Backend) -> None:
+    """Rays `(agents, R)` against one circle: each agent's fan of rays."""
+    angles = np.linspace(0.0, 2 * math.pi, 8, endpoint=False)
+    ox = backend.asarray(np.array([[-3.0], [0.0]]))
+    oy = backend.asarray(np.array([[0.0], [-3.0]]))
+    dx, dy = backend.asarray(np.cos(angles)[None]), backend.asarray(np.sin(angles)[None])
+    zero, one = backend.asarray(np.zeros(1)), backend.asarray(np.ones(1))
+    (got,) = values(backend, ray_circle(ox, oy, dx, dy, zero, zero, one, MAX))
+    assert got.shape == (2, 8)
+    assert got[0, 0] == pytest.approx(2.0, abs=1e-5) and got[1, 2] == pytest.approx(2.0, abs=1e-5)
+    assert (got[0, 1:] == MAX).sum() >= 6
