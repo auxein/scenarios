@@ -311,7 +311,7 @@ with `Weights(progress=1.0, delivery=2.0, time=1.0, approach=0.1, progress_floor
 
 **Commands:**
 
-- **`box-pushing train CONFIG [--run-dir DIR]`** builds everything from the config (the training set, the world, the brain, the aggregator, `EpisodeEvaluator`, `GeneticAlgorithm`) and runs Auxein with recording on, deterministic mode, generation delivery and a checkpoint every `run.checkpoint_every` generations (and Auxein's every 5 minutes). It prints one line at the start (backend, device, sizes, and the seconds per generation, measured on two steps), a progress line per generation (`print_progress`), and a summary at the end (the best score, its success rate on the training set, where the run is).
+- **`box-pushing train CONFIG [--run-dir DIR]`** builds everything from the config (the training set, the world, the brain, the aggregator, `EpisodeEvaluator`, `GeneticAlgorithm`) and runs Auxein with recording on, deterministic mode, generation delivery and a checkpoint every `run.checkpoint_every` generations (and Auxein's every 5 minutes). It prints one line at the start (backend, device, sizes, and the simulation's seconds per generation, measured on two steps; a generation takes about a quarter more, §10.7), a progress line per generation (`print_progress`), and a summary at the end (the best score, its success rate on the training set, where the run is).
 - **`progress.csv`** is rewritten after every generation **from the recording**: Auxein's `generation_history()` (generation, evaluations, the best score so far, the generation's score best, mean, median and worst) plus, per generation, the means of the descriptors over its candidates (`success_rate_mean`, `progress_mean`, `approach_mean`, `max_pushers_mean`), the champion's descriptors (`champion_*`) and the active seconds. Decision 6 asked for `ProgressHistory`; it is built from the recording instead, because `ProgressHistory` holds no descriptors and, after a resume, only the generations since the last checkpoint (a resume replays from there), while the recording has the whole run. It can be charted while the run goes on.
 - **Ctrl-C stops a run resumably**, after the generation in progress, with a checkpoint (a second Ctrl-C stops at once, losing that generation). With Auxein `v0.3.2` one Ctrl-C did not reach a batched run (an Auxein bug, fixed on a branch, §10.5); `train` handles it itself until the fix is released.
 - **`box-pushing train --resume DIR [--generations N] [--config CONFIG]`** continues a run from its recording and its `config.toml`: after Ctrl-C or a crash (Auxein replays from the last checkpoint; deterministic mode, so the result is the run that never stopped), or with another budget (`--generations`: more to extend it, fewer to end it sooner, never fewer than it has). **Only the budget may change**: a `--config` that differs in anything else is refused, listing every difference (`fitness.approach: recorded 0.1, given 0.2`), and so is an edited `config.toml` in the run directory, by Auxein, whose comparison of the evaluator sees the world's parameters and the score's weights. The new budget is written to the run's `config.toml`.
@@ -533,3 +533,37 @@ Details this design needed but was not first given. **Items 1–10 and 14 were d
 12. **Decided at M1b.** `max_pushers` is a recorded measurement (§5.2), for the "cooperation emerging" chart: cheap, and built. It counts agents touching the box, not agents pushing through a queue.
 13. **Open (M4).** CMA-ES at 1,474 dimensions (§6): full-covariance CMA-ES learns its covariance at a rate of about `1/d²`, so in a few hundred generations it barely adapts it, and its `O(d²)` state and eigendecompositions run on the host. The separable variant (pycma's `CMA_diagonal` option, through `PycmaStrategy(options=...)`) is the fairer comparison. `PycmaStrategy` writes no checkpoints, so a resumed comparison run replays from its start.
 14. **Decided.** `contacts.py` and `config.py` as modules (§8); M1a also added `scripted.py` and `demos.py`.
+
+### 10.7 Pilot run (M2a)
+
+`uv run box-pushing train configs/pilot.toml`: the full sizes (40 agents, a population of 100, 16 training scenarios, 4 easy and 12 full, 900 steps), 25 generations, torch float32 on Metal (the M4 Pro), seed 1. **12 minutes, 29 s per generation** (the start line's simulation-only estimate said 23 s; recording, aggregation and the GA add the rest). The recording is 32 MB for 2,500 evaluations, so the overnight run's 40,000 will be about 0.5 GB (§10.4). From `runs/pilot/progress.csv`:
+
+| generation | best so far | generation's best | generation's mean | mean success | mean progress | mean `max_pushers` | champion: success, progress |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 0.111 | 0.111 | 0.034 | 0.000 | +0.000 | 2.0 | 0 %, +0.06 |
+| 4 | 0.332 | 0.332 | 0.043 | 0.001 | +0.001 | 2.7 | 6 %, +0.12 |
+| 6 | 0.411 | 0.411 | 0.052 | 0.003 | +0.003 | 3.1 | 13 %, +0.05 |
+| 9 | 0.652 | 0.652 | 0.055 | 0.002 | +0.004 | 3.3 | 19 %, +0.12 |
+| 11 | 0.772 | 0.772 | 0.072 | 0.006 | +0.010 | 3.6 | 19 %, +0.24 |
+| 13 | 0.892 | 0.892 | 0.080 | 0.009 | +0.011 | 4.0 | 25 %, +0.20 |
+| 20 | 0.892 | 0.650 | 0.093 | 0.013 | +0.016 | 3.7 | 25 %, +0.20 |
+| 23 | 0.892 | 0.847 | 0.141 | 0.023 | +0.036 | 4.2 | 25 %, +0.20 |
+| 25 | **0.912** | 0.912 | 0.104 | 0.013 | +0.024 | 3.8 | **25 %, +0.22** |
+
+**Evolution is making progress.** The champion's score rose from 0.11 (the best random brain, gathering at best) to 0.91 in 25 generations, in steps (generations 2, 4, 6, 9, 11, 13, 25), and the population follows: its mean score tripled (0.034 to 0.10), its mean `max_pushers` doubled (2.0 to 3.8, "cooperation emerging", §1) and its mean approach rose from 0.34 to 0.49. **The champion delivers all 4 easy scenarios** (at steps 242 to 673, with 9 to 12 agents touching the box) **and none of the 12 full ones**, though it moves the box up to 41 % of the way in some (a mean progress of 0.22 over all 16). The clip (`uv run box-pushing watch runs/pilot`) shows it: in the easy scenarios the team gathers into a crowd behind the box and pushes it into the target; in the full ones the agents spread across the arena, many along the walls, and the few that find the box push it, slowly, with 5 to 7 touching. On the held-out scenarios it does the same: it finds and moves some boxes, delivers none.
+
+**What it suggests:**
+
+- **The easy scenarios are learned first, as designed** (§4.2). The full ones are where the run has to go: finding the box from scattered starts (§10.1) and pushing it far enough in 900 steps. The champion's progress on full scenarios (up to 0.41) says it gets partway; whether 400 generations get it the rest of the way is what the overnight run will tell.
+- **The champion stalled from generation 13 to 24** while the population's mean kept rising: the GA was filling in behind its best, not stuck. A plateau of a few dozen generations in the overnight run is no cause for alarm; one of a hundred or more would be.
+- **The approach term did not trap it.** The population's approach rose with its progress, and the champions moved the box from generation 1 on (§5.3's valley between gathering and nudging did not show up as a plateau at 0.1).
+- **On Metal, a clip of one candidate is close to, not identical with, the batch that scored it** (in one full scenario `watch` gave progress +0.26 against +0.24 recorded; the easy one was identical): float32 on a GPU depends slightly on the batch's shape (§2.11, §7). The clips show the brain's behaviour faithfully; exact scored numbers come from the recording.
+
+**What to watch for in the overnight run** (`configs/full.toml`):
+
+- **Ramming** (§10.2): a box that moves in jolts, with few agents touching it, while `max_pushers` stays low and progress rises; a lever for M2b if it appears (a lower top speed, a heavier box, a cost for collisions).
+- **Oblique pushes** (§2.6, §10.2): teams pushing at a face at an angle, sliding off and losing the box; the clip shows the box turning instead of moving.
+- **Agents trapping each other** (§10.1): clusters of agents circling one another far from the box, in full scenarios; the M1b senses-only controller fell into it when it turned toward teammates.
+- **Wall-hugging searchers**: in the pilot's clip many agents ended along the walls in full scenarios; if the champion's full-scenario progress stays low, the search, not the push, is the bottleneck (the levers of §10.1: a longer sensing range, rays that see the box farther).
+- **The step limit**: full-scenario episodes that end with the box moving toward the target (progress rising until step 900) mean 900 steps are still tight (§10.2); a longer limit is M2b's lever.
+- **The success rate on full scenarios** (`champion_success_rate` above 0.25 in `progress.csv` means a full scenario delivered) and **`max_pushers_mean`**, the cooperation chart.

@@ -165,7 +165,9 @@ def build(config: TrainingConfig, backend: Backend) -> Training:
 
 def estimate_generation_seconds(training: Training, steps: int = 2) -> float:
     """Seconds per generation, measured: random brains of the run's population size on the training set for `steps` steps
-    (after one to warm up), times the step limit. An upper bound, since delivered scenarios still cost compute."""
+    (after one to warm up), times the step limit: the simulation alone. A generation also records, aggregates and breeds,
+    which the pilot run measured at about a quarter more (23 s estimated, 29 s per generation on Metal), and costs less once
+    teams deliver early."""
     c, backend = training.config, training.backend
     world = BoxPushingWorld(c.world, c.sensing, steps=1)
     layout = world.layout(tuple(training.training_set), backend)
@@ -329,7 +331,7 @@ def train(
         f"{len(training.training_set)} training scenarios ({c.scenarios.easy} easy, {c.scenarios.full} full), {c.max_steps} steps, "
         f"{c.budget.generations} generations"
     )
-    expected = f", about {estimate_generation_seconds(training):.0f} s per generation at most" if estimate else ""
+    expected = f", about {estimate_generation_seconds(training):.0f} s of simulation per generation" if estimate else ""
     out(f"training {c.name}: {backend.name} {backend.device} {backend.precision}; {sizes}{expected}")
     path.mkdir(parents=True, exist_ok=True)
     (path / "config.toml").write_text(dump_config(config))
