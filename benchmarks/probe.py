@@ -10,8 +10,14 @@ is simulated) act on their own senses:
 - **loop**: `--steps` steps of `BoxPushingWorld.run` itself, which also tracks the measurements, checks for non-finite states
   and the early stop: the number a generation actually costs;
 - **generation**: the loop's time per step × the step limit (600): an upper bound, since delivered scenarios still cost compute;
-- **peak memory**, where the backend reports it: numpy through `tracemalloc` (numpy reports its allocations to it), Metal and
-  CUDA from torch's allocator; torch on the CPU does not report it.
+- **memory**, where the backend reports it: numpy's peak through `tracemalloc` (numpy reports its allocations to it); on
+  Metal, from `torch.mps`, the peak of what tensors hold during the loop (`current_allocated_memory`, sampled every step) and
+  what the driver holds at its end (`driver_allocated_memory`, torch's cache included, emptied before each configuration so
+  that the figure is this one's), as `allocated / driver`; CUDA's peak from torch's allocator; torch on the CPU reports none.
+
+**Warm-up.** Each backend is warmed up once before anything is timed (a small configuration run through every part), so the
+first configuration does not pay for the backend's start-up (Metal compiles its kernels on first use), and each configuration
+runs its whole loop once untimed, so it does not pay for kernels of its own shapes either.
 
     uv run python -m benchmarks.probe                       # numpy float32 and torch float32 on the CPU
     uv run python -m benchmarks.probe --device mps          # and torch float32 on Metal (Apple Silicon)
@@ -63,10 +69,38 @@ class Timing:
     loop: float
     """Seconds per step of each part, and of the whole loop."""
     peak: float | None
-    """Peak memory in MB during the loop, where the backend reports it."""
+    """Peak memory in MB during the loop, where the backend reports it (on Metal, what tensors held)."""
+    driver: float | None = None
+    """Metal only: what the driver held, in MB, at the end of the loop."""
 
     def generation(self, steps: int) -> float:
         return self.loop * steps
+
+    def memory(self) -> str:
+        """The memory column: `peak`, or on Metal `allocated / driver`, or `n/a`."""
+        if self.peak is None:
+            return "n/a"
+        return f"{self.peak:,.0f}" if self.driver is None else f"{self.peak:,.0f} / {self.driver:,.0f}"
+
+
+class MetalMemory:
+    """Metal's memory during a loop, from `torch.mps`: the peak of what tensors hold, sampled at every step (a `StepHook`), and
+    what the driver holds at the end, after emptying torch's cache at the start so that it is this loop's."""
+
+    def __init__(self, torch: Any) -> None:
+        self._mps = torch.mps
+        self.high = 0.0
+
+    def start(self) -> None:
+        self._mps.empty_cache()
+        self.high = float(self._mps.current_allocated_memory())
+
+    def __call__(self, t: int, state: Any, senses: Any) -> None:
+        self.high = max(self.high, float(self._mps.current_allocated_memory()))
+
+    def report(self) -> tuple[float, float]:
+        """`(peak allocated, driver)` in MB."""
+        return self.high / 2**20, float(self._mps.driver_allocated_memory()) / 2**20
 
 
 def probe(backend: Backend, agents: int, n: int, s: int, steps: int, warmup: int, params: WorldParams) -> Timing:
@@ -107,8 +141,10 @@ def probe(backend: Backend, agents: int, n: int, s: int, steps: int, warmup: int
         _sync(backend)
         return time.perf_counter() - start
 
+    loop()  # the loop's own operations at these shapes, untimed (on Metal, their kernels compile on first use)
     seconds = loop()
     peak: float | None = None
+    driver: float | None = None
     if backend.name == "numpy":
         tracemalloc.start()
         loop()
@@ -120,15 +156,16 @@ def probe(backend: Backend, agents: int, n: int, s: int, steps: int, warmup: int
         loop()
         peak = torch.cuda.max_memory_allocated() / 2**20
     elif backend.device == "mps":
-        torch = _torch()
-        high = [0.0]
+        memory = MetalMemory(_torch())
+        memory.start()
+        loop(memory)
+        peak, driver = memory.report()
+    return Timing(backend, agents, n, s, float(parts[0]), float(parts[1]), float(parts[2]), seconds / steps, peak, driver)
 
-        def watch(t: int, state: Any, senses: Any) -> None:
-            high[0] = max(high[0], float(torch.mps.driver_allocated_memory()))
 
-        loop(watch)
-        peak = high[0] / 2**20
-    return Timing(backend, agents, n, s, float(parts[0]), float(parts[1]), float(parts[2]), seconds / steps, peak)
+def warm_up(backend: Backend, params: WorldParams) -> None:
+    """A small configuration through every part, untimed, so that the first timed one does not pay for the backend's start-up."""
+    probe(backend, 10, 4, 4, 1, 1, params)
 
 
 def recommend(timings: Sequence[Timing], steps: int, budget: float) -> str:
@@ -193,7 +230,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"torch {torch.__version__}, {torch.get_num_threads()} CPU threads")
     limit = params.simulation.max_steps
     print(f"{params.simulation.substeps} substeps per step; a generation is {limit} steps (an upper bound); budget {args.budget:.0f} s\n")
-    print("| backend | agents | n × s | sensing | brain | physics | loop (s/step) | s / generation | peak MB |")
+    for backend in backends:
+        warm_up(backend, params)
+    print("| backend | agents | n × s | sensing | brain | physics | loop (s/step) | s / generation | memory MB |")
     print("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
     timings: list[Timing] = []
     for agents in args.agents:
@@ -206,10 +245,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                     print(f"| {label} | {agents} | {n} × {s} | failed: {type(error).__name__} | | | | | |", flush=True)
                     continue
                 timings.append(t)
-                peak = f"{t.peak:,.0f}" if t.peak is not None else "n/a"
                 print(
                     f"| {label} | {agents} | {n} × {s} | {t.sensing:.3f} | {t.policy:.3f} | {t.physics:.3f} | {t.loop:.3f} | "
-                    f"{t.generation(limit):,.0f} | {peak} |",
+                    f"{t.generation(limit):,.0f} | {t.memory()} |",
                     flush=True,
                 )
     print("\nrecommendation:")
