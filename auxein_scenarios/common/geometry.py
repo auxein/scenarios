@@ -11,12 +11,23 @@ every frame change, instead of calling `cos` and `sin` in every helper.
 Everything is element-wise and branch-free (both sides of a case are computed and chosen with `where`), so that results do not
 depend on the batch an entry is part of, and divisions are guarded so that no branch produces a NaN that a `where` would then
 have to discard (a NaN would still poison gradients and some backends' reductions).
+
+**Ray casts** (M1b, for the agents' range rays): a ray starts at `(ox, oy)` and runs along the unit direction `(dx, dy)`; every
+`ray_*` function returns the distance along it to the first point of a shape, **0 when the ray starts inside the shape**, and
+`max_range` when the shape is not hit within `[0, max_range]` ("no hit"). The sensor takes the minimum over the shapes, so a
+shape that is farther than another simply loses, and a padded obstacle slot (`valid` 0) returns `max_range` and never wins:
+the minimum with it is exact, so padding does not change a reading to the last bit. Rays are typically shaped `(..., R)`, with
+the shapes broadcast against them.
 """
 
 from auxein.backend import Array, backend_of
 
 __all__ = [
     "aabb_contact",
+    "ray_aabb",
+    "ray_circle",
+    "ray_inside_aabb",
+    "ray_obb",
     "from_frame",
     "half_plane_distance",
     "obb_contact",
@@ -109,3 +120,76 @@ def obb_corners(cx: Array, cy: Array, c: Array, s: Array, hx: Array, hy: Array) 
     lx = xp.stack([hx + 0.0 * cx, -hx + 0.0 * cx, -hx + 0.0 * cx, hx + 0.0 * cx], axis=-1)
     ly = xp.stack([hy + 0.0 * cy, hy + 0.0 * cy, -hy + 0.0 * cy, -hy + 0.0 * cy], axis=-1)
     return from_frame(lx, ly, cx[..., None], cy[..., None], c[..., None], s[..., None])
+
+
+def _slab(o: Array, d: Array, low: Array, high: Array) -> tuple[Array, Array]:
+    """The parameter interval `[enter, exit]` in which the ray `o + t d` (one axis) is within `[low, high]`; empty (enter >
+    exit) when the ray runs parallel to the slab outside it. Infinite bounds come only from `where`, never from arithmetic."""
+    xp = backend_of(o).xp
+    parallel = d == 0.0
+    inv = 1.0 / xp.where(parallel, 1.0, d)
+    t1, t2 = (low - o) * inv, (high - o) * inv
+    within = (o >= low) & (o <= high)
+    infinity = 0.0 * t1 + xp.inf  # an array, so that the nested `where` keeps the inputs' dtype and device
+    enter = xp.where(parallel, xp.where(within, -infinity, infinity), xp.minimum(t1, t2))
+    leave = xp.where(parallel, xp.where(within, infinity, -infinity), xp.maximum(t1, t2))
+    return enter, leave
+
+
+def ray_aabb(ox: Array, oy: Array, dx: Array, dy: Array, cx: Array, cy: Array, hx: Array, hy: Array, max_range: float) -> Array:
+    """The distance along the ray to the axis-aligned rectangle of centre `(cx, cy)` and half-sides `(hx, hy)` (slab method).
+
+    A ray grazing an edge or a corner hits it; a ray starting inside or on the boundary returns 0."""
+    xp = backend_of(ox).xp
+    enter_x, leave_x = _slab(ox, dx, cx - hx, cx + hx)
+    enter_y, leave_y = _slab(oy, dy, cy - hy, cy + hy)
+    enter, leave = xp.maximum(enter_x, enter_y), xp.minimum(leave_x, leave_y)
+    hit = (enter <= leave) & (leave >= 0.0) & (enter <= max_range)
+    return xp.where(hit, xp.clip(enter, 0.0, None), max_range)
+
+
+def ray_obb(
+    ox: Array,
+    oy: Array,
+    dx: Array,
+    dy: Array,
+    cx: Array,
+    cy: Array,
+    c: Array,
+    s: Array,
+    hx: Array | float,
+    hy: Array | float,
+    max_range: float,
+) -> Array:
+    """`ray_aabb` for an oriented rectangle (centre `(cx, cy)`, orientation `(c, s)`, half-sides along its own axes): the
+    ray is taken into the rectangle's frame, where distances are unchanged."""
+    lx, ly = to_frame(ox, oy, cx, cy, c, s)
+    ldx, ldy = c * dx + s * dy, c * dy - s * dx
+    zero = 0.0 * lx
+    return ray_aabb(lx, ly, ldx, ldy, zero, zero, zero + hx, zero + hy, max_range)
+
+
+def ray_circle(ox: Array, oy: Array, dx: Array, dy: Array, cx: Array, cy: Array, r: Array, max_range: float) -> Array:
+    """The distance along the ray to the circle of centre `(cx, cy)` and radius `r`: the smaller root of `|o + t d − c| = r`.
+
+    A tangent ray hits (one double root); a ray starting inside or on the circle returns 0."""
+    xp = backend_of(ox).xp
+    px, py = ox - cx, oy - cy
+    b = px * dx + py * dy
+    c = px * px + py * py - r * r
+    discriminant = b * b - c
+    t = -b - xp.sqrt(xp.clip(discriminant, 0.0, None))
+    inside = c <= 0.0
+    hit = inside | ((discriminant >= 0.0) & (t >= 0.0) & (t <= max_range))
+    return xp.where(hit, xp.where(inside, 0.0, t), max_range)
+
+
+def ray_inside_aabb(ox: Array, oy: Array, dx: Array, dy: Array, half: float, max_range: float) -> Array:
+    """The distance along a ray from inside the square `[-half, half]²` to its boundary: the walls of the arena, seen from
+    within (a ray always leaves the square, so it hits unless the walls are beyond `max_range`). From outside, 0."""
+    xp = backend_of(ox).xp
+    _, leave_x = _slab(ox, dx, -half + 0.0 * ox, half + 0.0 * ox)
+    _, leave_y = _slab(oy, dy, -half + 0.0 * oy, half + 0.0 * oy)
+    leave = xp.clip(xp.minimum(leave_x, leave_y), 0.0, None)
+    outside = (xp.abs(ox) > half) | (xp.abs(oy) > half)
+    return xp.where(outside, 0.0, xp.clip(leave, None, max_range))
