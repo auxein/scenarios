@@ -18,6 +18,37 @@ Each entry has this format:
 
 ---
 
+## 2026-10-16: a parameterised aggregator source hides its parameters
+
+- **Kind:** bug
+- **Symptom:** the box-pushing score is a parameterised source (`fitness.EpisodeScore(weights, max_steps)`), as M2a decided.
+  Auxein labels a callable source by its `__qualname__`, which an instance does not have, so the label is the class's name
+  whatever the weights: `mean(<EpisodeScore>)`, and the same for a `functools.partial` (`mean(<partial>)`). The evaluator's
+  description, which `resume` compares, then does not change with a weight, so **resuming a run with changed fitness weights
+  was accepted** and the rest of the run judged with the new ones, against "only the budget may change" (core design §10.4).
+- **Minimal reproduction** (in a clone of Auxein, with its team fixture):
+
+  ```python
+  class Weighted:
+      def __init__(self, weight): self.weight = weight
+      def __call__(self, m): return m["final_distance"] + self.weight * m["effort"]
+      def __repr__(self): return f"Weighted(weight={self.weight})"
+
+  mean(Weighted(0.02)).label == mean(Weighted(5.0)).label        # True: "mean(<Weighted>)"
+  # auxein.run(...) with Weighted(0.02), then auxein.resume(...) with Weighted(5.0) and a larger budget: accepted
+  ```
+
+- **Auxein branch / PR:** `fix/parameterised-source-labels` (pushed;
+  https://github.com/auxein/auxein/pull/new/fix/parameterised-source-labels). A source is labelled by its `describe()`, its
+  class's own `__repr__`, or, for a partial, its function and bound arguments; functions and plain objects keep their labels.
+  Regression tests in `tests/aggregators/aggregator_test.py` and `tests/driver/episode_run_test.py` (a changed weight is
+  refused on resume); Auxein's design doc §6.5 and `CHANGELOG.md` (Unreleased) updated. The full suite passes (3,747 tests).
+- **Status:** fixed in branch `fix/parameterised-source-labels`, PR to open; needs a release (suggested `v0.3.3`).
+- **Workaround:** `fitness.EpisodeScore` and `fitness.EpisodeProgress` set an instance `__qualname__` to their description
+  (`# AUXEIN-WORKAROUND: 2026-10-16: a parameterised aggregator source hides its parameters`), which v0.3.2 shows. It gives
+  the label the fix gives, so runs recorded now stay resumable after the upgrade; remove the two lines once the scenarios
+  use the fixed tag. The training command also compares the whole config on resume (`train.py`), weights included.
+
 ## 2026-10-16: a batched environment cannot learn the batch's size or backend from the protocol
 
 - **Kind:** feature request
