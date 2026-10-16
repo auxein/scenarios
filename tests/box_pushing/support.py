@@ -49,3 +49,30 @@ def run(
     state = start if start is not None else initial_state(layout, n)
     end = simulate(state, layout, p, controller, steps, hook=recorder, stop_when_done=stop_when_done)
     return end, recorder.trajectory(), layout
+
+
+class ZeroPolicy:
+    """A batch policy that never acts: zero thrust and turning for every agent."""
+
+    def __init__(self, n: int, backend: Backend) -> None:
+        self.n, self.backend = n, backend
+
+    def act_batch(self, observations: Any) -> Any:
+        xp = self.backend.xp
+        return xp.zeros((*observations.shape[:-1], 2), dtype=observations.dtype, device=self.backend.device)
+
+
+class StatePolicy:
+    """A scripted controller (which reads the true state) driving the world's step loop as if it were a policy: the loop's hook
+    hands it every state just before it acts. For tests that compare the environment with M1a's `simulate`."""
+
+    def __init__(self, controller: Controller, layout: Layout, params: WorldParams, n: int = 1) -> None:
+        self.controller, self.layout, self.params, self.n = controller, layout, params, n
+        self.state: State | None = None
+
+    def hook(self, t: int, state: State, senses: object) -> None:
+        self.state = state
+
+    def act_batch(self, observations: Any) -> Any:
+        assert self.state is not None
+        return self.controller(self.state, self.layout, self.params)
