@@ -47,7 +47,7 @@ required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_6
 # On Linux (CI) torch comes from PyTorch's CPU-only index, as in Auxein: the default PyPI wheels pull in about 3 GB of CUDA
 # libraries that the tests never use. Other platforms keep the PyPI wheels (macOS wheels include Metal/MPS support).
 [tool.uv.sources]
-auxein = { git = "https://github.com/auxein/auxein", tag = "v0.3.2" }
+auxein = { git = "https://github.com/auxein/auxein", tag = "v0.3.3" }
 torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
 [[tool.uv.index]]
