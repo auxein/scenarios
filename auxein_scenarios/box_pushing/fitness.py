@@ -71,7 +71,6 @@ class EpisodeProgress:
 
     def __init__(self, floor: float = -1.0) -> None:
         self.floor = floor
-        self.__qualname__ = self.describe()  # AUXEIN-WORKAROUND: 2026-10-16: a parameterised aggregator source hides its parameters
 
     def __call__(self, measurements: Mapping[str, Array]) -> Array:
         return _progress(measurements, self.floor)
@@ -92,9 +91,6 @@ class EpisodeScore:
         if max_steps < 1:
             raise ValueError(f"max_steps must be at least 1, got {max_steps}")
         self.weights, self.max_steps = weights, max_steps
-        # AUXEIN-WORKAROUND: 2026-10-16: a parameterised aggregator source hides its parameters
-        # Auxein v0.3.2 labels a source by its __qualname__ alone; this one carries its description, the label the fix gives.
-        self.__qualname__ = self.describe()
 
     def __call__(self, measurements: Mapping[str, Array]) -> Array:
         w = self.weights
