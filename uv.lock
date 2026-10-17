@@ -22,8 +22,8 @@ wheels = [
 
 [[package]]
 name = "auxein"
-version = "0.3.2"
-source = { git = "https://github.com/auxein/auxein?tag=v0.3.2#d63e9c77942a912b9243dddfeeff29411da48a93" }
+version = "0.3.3"
+source = { git = "https://github.com/auxein/auxein?tag=v0.3.3#b423e90324d10b273b6847f9f07487f308e9319a" }
 dependencies = [
     { name = "array-api-compat" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -75,9 +75,9 @@ render = [
 [package.metadata]
 requires-dist = [
     { name = "array-api-compat", specifier = ">=1.9" },
-    { name = "auxein", git = "https://github.com/auxein/auxein?tag=v0.3.2" },
-    { name = "auxein", extras = ["cma"], marker = "extra == 'cma'", git = "https://github.com/auxein/auxein?tag=v0.3.2" },
-    { name = "auxein", extras = ["torch"], marker = "extra == 'torch'", git = "https://github.com/auxein/auxein?tag=v0.3.2" },
+    { name = "auxein", git = "https://github.com/auxein/auxein?tag=v0.3.3" },
+    { name = "auxein", extras = ["cma"], marker = "extra == 'cma'", git = "https://github.com/auxein/auxein?tag=v0.3.3" },
+    { name = "auxein", extras = ["torch"], marker = "extra == 'torch'", git = "https://github.com/auxein/auxein?tag=v0.3.3" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'torch'", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'torch'", specifier = ">=2.4" },

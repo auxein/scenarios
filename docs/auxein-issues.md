@@ -34,11 +34,11 @@ Each entry has this format:
   the driver yields to the event loop after every tell, so one Ctrl-C stops a run after the batch in progress, recorded as
   interrupted with a checkpoint. Regression tests in `tests/driver/run_recording_test.py` (a cancellation during a batch, and
   a real SIGINT to a subprocess); design doc §10.4 and `CHANGELOG.md` (Unreleased) updated.
-- **Status:** fixed in branch `fix/ctrl-c-between-batches`, PR to open; needs a release (suggested `v0.3.3`, with the label fix).
-- **Workaround:** `train.StopOnCtrlC` (`# AUXEIN-WORKAROUND: 2026-10-16: one Ctrl-C does not stop a batched run`): during
-  `box-pushing train`, a SIGINT handler of the scenario's own (which `asyncio.run` leaves alone) asks the run to stop, and a
-  progress callback raises `KeyboardInterrupt` after the generation's tell, which Auxein records as interrupted with a
-  checkpoint; a second Ctrl-C stops at once. Remove the class once the scenarios use the fixed tag.
+- **Status:** released in tag `v0.3.3` (`b423e90`), merged as Auxein PR #51.
+- **Workaround:** removed on 2026-10-17, when the scenarios moved to `v0.3.3`. It was `train.StopOnCtrlC`, a SIGINT handler
+  of the scenario's own and a progress callback that raised `KeyboardInterrupt` after the generation's tell. Auxein now stops
+  the run itself after the batch in progress; `tests/box_pushing/train_test.py` sends one real SIGINT to `box-pushing train`
+  and checks that it ends with the interrupt's exit code and a resumable, interrupted recording.
 
 ## 2026-10-16: a parameterised aggregator source hides its parameters
 
@@ -65,11 +65,12 @@ Each entry has this format:
   class's own `__repr__`, or, for a partial, its function and bound arguments; functions and plain objects keep their labels.
   Regression tests in `tests/aggregators/aggregator_test.py` and `tests/driver/episode_run_test.py` (a changed weight is
   refused on resume); Auxein's design doc §6.5 and `CHANGELOG.md` (Unreleased) updated. The full suite passes (3,747 tests).
-- **Status:** fixed in branch `fix/parameterised-source-labels`, PR to open; needs a release (suggested `v0.3.3`).
-- **Workaround:** `fitness.EpisodeScore` and `fitness.EpisodeProgress` set an instance `__qualname__` to their description
-  (`# AUXEIN-WORKAROUND: 2026-10-16: a parameterised aggregator source hides its parameters`), which v0.3.2 shows. It gives
-  the label the fix gives, so runs recorded now stay resumable after the upgrade; remove the two lines once the scenarios
-  use the fixed tag. The training command also compares the whole config on resume (`train.py`), weights included.
+- **Status:** released in tag `v0.3.3` (`b423e90`), merged as Auxein PR #50 (with a follow-up for Python 3.14, where a
+  `functools.partial` counts as a routine for `inspect.isroutine`, so it is now recognised first).
+- **Workaround:** removed on 2026-10-17, when the scenarios moved to `v0.3.3`. `fitness.EpisodeScore` and
+  `fitness.EpisodeProgress` had set an instance `__qualname__` to their description; Auxein now uses `describe()`, which
+  gives the same label, so runs recorded with the workaround stay resumable. The training command also compares the whole
+  config on resume (`train.py`), weights included.
 
 ## 2026-10-16: a batched environment cannot learn the batch's size or backend from the protocol
 

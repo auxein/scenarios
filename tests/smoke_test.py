@@ -16,9 +16,9 @@ from auxein.random import RandomStream
 from auxein_scenarios.box_pushing.environment import ACTIONS, HIDDEN, brain
 from auxein_scenarios.box_pushing.sensors import observation_layout
 
-AUXEIN_TAG = "v0.3.2"
-AUXEIN_COMMIT = "d63e9c77942a912b9243dddfeeff29411da48a93"
-AUXEIN_VERSION = "0.3.2"
+AUXEIN_TAG = "v0.3.3"
+AUXEIN_COMMIT = "b423e90324d10b273b6847f9f07487f308e9319a"
+AUXEIN_VERSION = "0.3.3"
 
 OBSERVATION_SIZE = observation_layout().size
 OUTPUTS = ACTIONS  # thrust and turning, in [-1, 1]

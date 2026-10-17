@@ -16,16 +16,13 @@
 The run stops on its budget only: no held-out evaluation or early stop during the run (design doc §6, §10.5).
 """
 
-import contextlib
 import csv
 import importlib
 import importlib.util
 import io
 import math
-import signal
-import threading
 import time
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -52,7 +49,6 @@ __all__ = [
     "RUNS",
     "ProgressCsv",
     "Showcase",
-    "StopOnCtrlC",
     "Training",
     "TrainingError",
     "build",
@@ -244,45 +240,6 @@ def _descriptor_columns(evaluations: Sequence[RecordedEvaluation], champion: Rec
     return columns
 
 
-# --- Ctrl-C ---
-
-
-class StopOnCtrlC:
-    """One Ctrl-C stops the run after the generation in progress, consistent and checkpointed; a second stops it at once.
-
-    # AUXEIN-WORKAROUND: 2026-10-16: one Ctrl-C does not stop a batched run
-    Auxein v0.3.2 runs its loop under `asyncio.run`, which turns Ctrl-C into a cancellation that a batched evaluator never
-    lets through, so only a second Ctrl-C stopped a run, in the middle of a generation. While `active()`, this installs its own
-    SIGINT handler (which `asyncio.run` then leaves alone): the first Ctrl-C sets a flag, and this callback, called after each
-    generation's tell, raises `KeyboardInterrupt` there, which Auxein records as an interrupted run with a checkpoint. Remove it
-    once the scenarios use an Auxein with the fix (`fix/ctrl-c-between-batches`)."""
-
-    def __init__(self, out: Print = print) -> None:
-        self._out = out
-        self._requested = False
-
-    def __call__(self, progress: Progress[Any]) -> None:
-        if self._requested and not progress.final:
-            raise KeyboardInterrupt
-
-    def _handle(self, signum: int, frame: object) -> None:
-        if self._requested:
-            raise KeyboardInterrupt
-        self._requested = True
-        self._out("\nCtrl-C: stopping after this generation (Ctrl-C again to stop at once, losing it)")
-
-    @contextlib.contextmanager
-    def active(self) -> Generator["StopOnCtrlC"]:
-        if threading.current_thread() is not threading.main_thread() or signal.getsignal(signal.SIGINT) is signal.SIG_IGN:
-            yield self  # signals reach only the main thread; and a process started with Ctrl-C ignored keeps it ignored
-            return
-        previous = signal.signal(signal.SIGINT, self._handle)
-        try:
-            yield self
-        finally:
-            signal.signal(signal.SIGINT, previous)
-
-
 # --- train and resume ---
 
 
@@ -336,10 +293,8 @@ def train(
     path.mkdir(parents=True, exist_ok=True)
     (path / "config.toml").write_text(dump_config(config))
     out(f"run directory {path} (Ctrl-C stops it resumably: uv run box-pushing train --resume {path})")
-    stopper = StopOnCtrlC(out)
-    hooks: list[Callback] = [*([print_progress()] if progress else []), ProgressCsv(path), *callbacks, stopper]
-    with stopper.active():
-        result = auxein.run(**training.arguments(path / RECORDING, hooks))
+    hooks: list[Callback] = [*([print_progress()] if progress else []), ProgressCsv(path), *callbacks]
+    result = auxein.run(**training.arguments(path / RECORDING, hooks))
     for line in _summary(result, path):
         out(line)
     return result, path
@@ -385,8 +340,7 @@ def resume(
     backend = recorded_backend(path)
     training = build(chosen, backend)
     out(f"resuming {path}: {backend.name} {backend.device} {backend.precision}, budget {chosen.budget.generations} generations")
-    stopper = StopOnCtrlC(out)
-    hooks: list[Callback] = [*([print_progress()] if progress else []), ProgressCsv(path), *callbacks, stopper]
+    hooks: list[Callback] = [*([print_progress()] if progress else []), ProgressCsv(path), *callbacks]
     started = False
 
     def mark(progress: Progress[Any]) -> None:
@@ -394,8 +348,7 @@ def resume(
         started = True
 
     try:
-        with stopper.active():
-            result = auxein.resume(**training.arguments(path / RECORDING, [mark, *hooks]))
+        result = auxein.resume(**training.arguments(path / RECORDING, [mark, *hooks]))
         started = True
     finally:
         if started and chosen != recorded:
