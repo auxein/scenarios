@@ -1,0 +1,15 @@
+{
+  "_about": "Scenario sets as the generator made them before M2b (main at 3faefc1), for configs without scenarios.generator: they must stay bit for bit the same.",
+  "smoke": {
+    "training": "73b796073c04282275dbc019067bf5dff749da38f25dcdcd732ff301950d5fee",
+    "held_out": "736a43d0b39f6e08b233b45c744df5bbdf402e27afb67f8a62a6739ee516ebd8",
+    "training_params_sha": "9c3f0ffeba1bba6f52f07aa0465067bd6367b6f0e2544f620eaf2f874b80d8ce",
+    "held_params_sha": "99508af63556d463b691c99f487a8281102456fb4ac9fb13ec4574d796d6d2cc"
+  },
+  "full": {
+    "training": "0a4f781b849a799d63c257daa6e13cbc3cf6b6617f6eb6c56e6c1d43dfebc876",
+    "held_out": "d73fe54bf7c4739c21c799dbf82435c18351682d347762f0bbfa80b37e0345b2",
+    "training_params_sha": "8ee065395ad4115e8b792b879e3e198a91bc8e831e8c18a30f72e1e4f7e7c029",
+    "held_params_sha": "17288db3e1a22c70b4e637fbfbe446794b2b5ceb6c4ece364fccbdca77f891cd"
+  }
+}
