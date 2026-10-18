@@ -41,7 +41,7 @@ from pathlib import Path
 
 from auxein.backend import Backend
 
-from auxein_scenarios.box_pushing import demos, scenarios, showcase, train
+from auxein_scenarios.box_pushing import compare, demos, scenarios, showcase, train
 from auxein_scenarios.box_pushing import report as held_out_report
 from auxein_scenarios.box_pushing.config import ConfigError, WorldParams, load_config
 from auxein_scenarios.box_pushing.milestones import MilestoneError, parse_generations
@@ -72,16 +72,18 @@ def _demo(args: argparse.Namespace) -> int:
 
 def _scenarios(args: argparse.Namespace) -> int:
     params = WorldParams()
-    difficulty = DIFFICULTIES[args.difficulty]
+    easy, full = scenarios.difficulties(args.generator)
+    difficulty = {"easy": easy, "full": full}[args.difficulty]
     generated = scenarios.training_set(args.agents, params, seed=args.seed, mix=((difficulty, args.count),))
-    path = Path(args.out) / f"scenarios-{args.difficulty}-seed{args.seed}.png"
+    legacy = "" if args.generator == scenarios.LATEST else f"-generator{args.generator}"
+    path = Path(args.out) / f"scenarios-{args.difficulty}-seed{args.seed}{legacy}.png"
     render_gallery(
         [dict(s.params) for s in generated],
         params,
         path,
         labels=list(generated.ids),
         kicker="Scenarios",
-        title=f"{args.count} {args.difficulty} scenarios, seed {args.seed}, {args.agents} agents",
+        title=f"{args.count} {args.difficulty} scenarios, seed {args.seed}, {args.agents} agents, generator {args.generator}",
     )
     print(path)
     return 0
@@ -166,7 +168,7 @@ def _watch(args: argparse.Namespace) -> int:
     return 0
 
 
-SHOWING_ERRORS = (ConfigError, MilestoneError, ValueError, train.TrainingError, FileNotFoundError)
+SHOWING_ERRORS = (ConfigError, MilestoneError, ValueError, train.TrainingError, FileNotFoundError)  # CompareError is a ValueError
 
 
 def _showing(handler: Callable[[argparse.Namespace], None]) -> Callable[[argparse.Namespace], int]:
@@ -217,9 +219,19 @@ def _charts_command(args: argparse.Namespace) -> None:
 
 
 def _showcase_command(args: argparse.Namespace) -> None:
-    showcase.showcase(
-        args.run_dir, generations=_generations(args), showcase_tokens=args.showcase, exploit=args.exploit, size=parse_size(args.size)
+    showcase.showcase_runs(
+        args.run_dirs, generations=_generations(args), showcase_tokens=args.showcase, exploit=args.exploit, size=parse_size(args.size)
     )
+
+
+def _compare_command(args: argparse.Namespace) -> None:
+    comparison = compare.build_comparison(args.run_dirs, held_out=args.held_out, milestones=args.milestones)
+    target = compare.write_comparison(comparison, args.out)
+    print(target / compare.MARKDOWN_FILE)
+    for run in comparison.runs:
+        final = run.champions[-1].held()
+        ok = final.episodes - final.failed
+        print(f"  {run.run_dir.name}: {final.delivered}/{ok} delivered ({final.success:.0%}), progress {final.progress:+.2f}")
 
 
 def _run_options(command: argparse.ArgumentParser, *, showcase_scenarios: bool = True) -> None:
@@ -317,17 +329,31 @@ def parser() -> argparse.ArgumentParser:
     charter.add_argument("run_dir", help="the run directory")
     charter.set_defaults(handler=_showing(_charts_command))
 
-    shower = commands.add_parser("showcase", help="the report, milestone clips, both montages and the charts of a run")
-    _run_options(shower)
+    shower = commands.add_parser("showcase", help="the report, clips, montages and charts of each run; compare when several")
+    shower.add_argument("run_dirs", nargs="+", help="one run directory, or several (then compared on the newest's held-out set)")
+    shower.add_argument("--generations", default=None, help="milestone generations, e.g. 1,50,400 (default: log-spaced)")
+    shower.add_argument("--showcase", nargs="+", default=None, help="showcase scenarios: train:<i>, held:<i>, best-held, worst-held")
     shower.add_argument("--exploit", default=None, help="an exploit seen in the clips (for the report's recommendation)")
     shower.add_argument("--size", default="1920x1080", help="the montages' size in pixels (default: 1920x1080)")
     shower.set_defaults(handler=_showing(_showcase_command))
+
+    comparer = commands.add_parser("compare", help="the final champions of several runs on one common held-out set")
+    comparer.add_argument("run_dirs", nargs="+", help="the run directories")
+    comparer.add_argument(
+        "--held-out", default=None, help="a run directory or config whose held-out set to use (default: the newest run's)"
+    )
+    comparer.add_argument("--milestones", action="store_true", help="every milestone's champion, not only the final one")
+    comparer.add_argument("--out", default=None, help="where to write compare.md and compare.csv (default: the reference run's report/)")
+    comparer.set_defaults(handler=_showing(_compare_command))
 
     gallery = commands.add_parser("scenarios", help="render a gallery of generated scenario layouts")
     gallery.add_argument("--difficulty", choices=sorted(DIFFICULTIES), default="full")
     gallery.add_argument("--seed", type=int, default=1)
     gallery.add_argument("--count", type=int, default=12)
     gallery.add_argument("--agents", type=int, default=20)
+    gallery.add_argument(
+        "--generator", type=int, choices=sorted(scenarios.GENERATORS), default=scenarios.LATEST, help="generator version (default: 2)"
+    )
     gallery.add_argument("--out", default="out", help="output directory (default: out/)")
     gallery.set_defaults(handler=_scenarios)
     return root
