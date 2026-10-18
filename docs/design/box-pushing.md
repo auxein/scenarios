@@ -1,6 +1,6 @@
 # Cooperative box-pushing: design
 
-**Status:** Draft for review · **Date:** 2026-10-18 · **Auxein:** `v0.3.3` · **Milestone:** M3 (the held-out report, milestone clips, the montage and charts)
+**Status:** Draft for review · **Date:** 2026-10-19 · **Auxein:** `v0.3.3` · **Milestone:** M2b (box clearance, generator versions, 4 + 28 training scenarios, comparing runs)
 
 ---
 
@@ -35,7 +35,22 @@
 
 - **The arena** is a walled square, 20 × 20 units by default, with the origin at its centre.
 - **Obstacles are random per scenario**: a few circles and axis-aligned rectangles (by default 2 to 6 in all at full difficulty, §4.2). Circle radii 0.5 to 1.5 units; rectangle sides 0.5 to 4 units, so no obstacle is thinner than an agent's diameter.
-- **Validity, with rejection.** A layout is accepted only if the free space is connected and the box can reach the target; otherwise it is redrawn from the same scenario stream. The check rasterises the arena on a grid of 0.25 units, inflates the obstacles and walls by the **box's circumscribed radius** (half its diagonal, so the check holds whatever the box's orientation) and flood-fills from the box's cell to the target's; a second flood fill, with obstacles inflated by an agent's radius, checks that every agent's spawn point is connected to the box (and no agent overlaps an obstacle, the box, a wall or another agent). New obstacles also keep clear of the box's starting footprint and of the target zone. This is conservative (it may reject a layout the box could cross by turning), which is the safe side. Generation happens once per scenario set, on the host, so it is plain numpy and may loop; a scenario records in `attempts` how many draws it took (most take one; dense difficulties take several).
+- **Validity, with rejection.** A layout is accepted only if the free space is connected and the box can reach the target; otherwise it is redrawn from the same scenario stream. The check rasterises the arena on a grid of 0.25 units, inflates the obstacles and walls by the **box's circumscribed radius** (half its diagonal, so the check holds whatever the box's orientation) and flood-fills from the box's cell to the target's; a second flood fill, with obstacles inflated by an agent's radius, checks that every agent's spawn point is connected to the box (and no agent overlaps an obstacle, the box, a wall or another agent). New obstacles also keep clear of the box's starting footprint and of the target zone (and, from generator 2, the box keeps a clearance: the next item). This is conservative (it may reject a layout the box could cross by turning), which is the safe side. Generation happens once per scenario set, on the host, so it is plain numpy and may loop; a scenario records in `attempts` how many draws it took (most take one; dense difficulties take several).
+- **Box clearance (generator 2, M2b).** Agents can only push, so a box against a wall or tucked beside an obstacle, with no
+  room behind it for an agent, cannot be moved toward a target on its other side. The first generator kept the box's
+  circumscribed circle only 0.3 units from obstacles and 0.5 from walls, less than an agent's diameter (0.5): five of the
+  overnight run's 64 held-out layouts and one training layout were never moved, all with the box against a wall or beside an
+  obstacle (§10.8). **Generator 2 keeps the box's centre at least its circumscribed radius plus 1.0 unit (two agent diameters)
+  from every wall and every obstacle's surface**, so the clearance holds whatever the box's orientation. A box drawn too close
+  to a wall redraws the layout; an obstacle drawn too close to the box is drawn again (as obstacles too close to the box or
+  the target always were). The target, the obstacles' sizes and the agents' spawns are drawn as before. It is
+  `Difficulty.box_clearance` (`scenarios.BOX_CLEARANCE`), at both difficulties.
+- **Generator versions.** A run's scenarios are generated from its config, so changing the generator would silently change
+  an old run's scenarios: its resume would be refused (the scenario set's fingerprint is in Auxein's description of the
+  evaluator), and its report would judge it on other held-out layouts. So the generator has **versions**
+  (`scenarios.GENERATORS`): **1** is the generator before M2b, kept bit for bit (`EASY`, `FULL`), and **2** adds the clearance
+  (`EASY_2`, `FULL_2`). The config names the version (`scenarios.generator`, §6.1). Tests pin version 1 against `main` before
+  M2b: the sets' fingerprints and params for the old presets, and a run recorded then, which reports the same CSV and resumes.
 
 ### 2.3 The box
 
@@ -222,11 +237,19 @@ A scenario is drawn from a seed: the **obstacle layout**, the **box's position a
 | box–target distance | 3 to 5 units | 6 to 12 units |
 | spawn | within 3 units of the box | scattered across the arena |
 
-**A training run uses 16 scenarios: 4 easy and 12 full** (decided at M2a; in that order, ids `train-0000`...), the training config's default (`[scenarios]`, §6), **fixed for the whole run**: parents and children are judged on the same scenarios, so a better score is a better brain, not easier scenarios (no rotating subsets). Sixteen rather than M1's 32 is what fits a population of 100 with 40 agents in about half a minute per generation on Metal (§10.3). The generator's own default without a mix (`scenarios.training_set`) is still M1's 32 (8 easy, 24 full), which M1's measurements in this document refer to. Easy scenarios give a clueless team something to stumble into (agents start near the box, close enough to see it, §10.1); the full ones keep evolution pointed at the real task.
+**A training run uses 32 scenarios: 4 easy and 28 full** (decided at M2b; M2a's runs used 4 easy and 12 full), the training
+config's default (`[scenarios]`, §6), in that order (ids `train-0000`...), **fixed for the whole run**: parents and children
+are judged on the same scenarios, so a better score is a better brain, not easier scenarios (no rotating subsets). M2a chose 16
+to fit about half a minute per generation on Metal (§10.3); the overnight run then showed the generalisation gap growing with
+training (0.10 to 0.24, §10.8), part of what later generations learned being the maps, so M2b gives the run **more full
+layouts**. The cost is about twice the time per generation: the probe's 100 × 32 row is 41 s at 600 steps, about a minute at
+900; **the new pilot measured 56 s per generation, so the overnight run is about 6.2 hours** for 400 generations, with a
+recording of about 0.7 GB (§10.4, §10.9); `train`'s start line estimates the run's hours. The generator's own default without a mix (`scenarios.training_set`) is still M1's 32 (8 easy,
+24 full), which M1's measurements in this document refer to. Easy scenarios give a clueless team something to stumble into (agents start near the box, close enough to see it, §10.1); the full ones keep evolution pointed at the real task.
 
 ### 4.3 Held-out sets
 
-**Fresh layouts never seen in training, at full difficulty**, evaluated after a run with `auxein.driver.evaluate_held_out` (or every few generations for the early stop, §6): the evidence for the "deployment to unseen situations" claim. 64 scenarios by default (ids `held-0000`...), generated from a seed and a **stream name** of their own, so that they are disjoint from the training set by construction, even with the same seed; `check_disjoint` verifies that no layout repeats. The strategy never sees them.
+**Fresh layouts never seen in training, at full difficulty**, evaluated after a run with `auxein.driver.evaluate_held_out` (or every few generations for the early stop, §6): the evidence for the "deployment to unseen situations" claim. 64 scenarios by default (ids `held-0000`...), made by the run's generator version (§2.2), generated from a seed and a **stream name** of their own, so that they are disjoint from the training set by construction, even with the same seed; `check_disjoint` verifies that no layout repeats. The strategy never sees them.
 
 ### 4.4 Episodes and delivery
 
@@ -297,15 +320,15 @@ with `Weights(progress=1.0, delivery=2.0, time=1.0, approach=0.1, progress_floor
 - **Strategy.** **`GeneticAlgorithm`** is the main strategy: a population evolving is the clearest story. **`PycmaStrategy`** (CMA-ES) on the same setup is a comparison run (M4); §10.6 notes its limits at 1,474 dimensions.
 - **Driver settings.** Generation delivery, deterministic mode, recording on (`run_dir`), progress printed with `auxein.callbacks.print_progress`. **The run stops on its budget only** (decided at M2a): no held-out evaluation and no early stop during the run (reading the recording of a running run for it is unchecked, §10.5); held-out results come after the run, in M3's report.
 - **The evaluator.** `EpisodeEvaluator(policy, world, training_set, aggregator)`, which takes Auxein's batched path because the world has `run_batch`, `MLPPolicy` has `decode_batch` and the GA's batches are arrays.
-- **Sizes** (decided at M2a, from the owner's Metal probe, §10.3): **40 agents, a population of 100** (`GeneticAlgorithm(population_size=100, offspring_size=100)`), **16 training scenarios** (4 easy, 12 full, fixed for the run), 900 steps. About 29 s per generation at most on Metal.
+- **Sizes** (decided at M2a, from the owner's Metal probe, §10.3): **40 agents, a population of 100** (`GeneticAlgorithm(population_size=100, offspring_size=100)`), **32 training scenarios** (4 easy, 28 full, fixed for the run; 16, with 12 full, until M2b, §4.2), 900 steps. 56 s per generation on Metal (29 s with M2a's 16 scenarios).
 - **Backend.** **torch float32 on Metal** (`mps`) by default; torch on the CPU when Metal is not available, with a message saying so (and several times slower). numpy stays the backend of tests.
 - **A command-line tool** trains from a TOML config, reproducible from its seed: the config fixes the world, the team, the sensing, the network, the scenario sets, the fitness weights, the strategy, the budget and the backend, and is copied into the run directory.
 
 ### 6.1 Training as built (M2a)
 
-**The config** (`config.TrainingConfig`, TOML through `tomllib`) is the run's definition. Sections: `[world.<section>]` (any field of `WorldParams`, e.g. `[world.simulation] max_steps`), `[sensing]`, `[team] agents`, `[brain] hidden, scale` (`MLPPolicy.space(scale)`), `[scenarios] easy, full, seed, held_out, held_out_seed`, `[fitness]` (the weights), `[strategy] population, offspring, crossover_probability, tournament_size, initial_step`, `[budget] generations`, `[run] seed, backend, device, precision, checkpoint_every` (generations), and a top-level `name` (default: the file's name). Every field has this document's default, so a config lists only what it changes; unknown keys and bad values are errors naming the key (`unknown key 'strategy.populaton'`, `team.agents must be an integer, got 'forty'`). The budget in generations is `population + (generations − 1) × offspring` evaluations: the initial population is the first generation.
+**The config** (`config.TrainingConfig`, TOML through `tomllib`) is the run's definition. Sections: `[world.<section>]` (any field of `WorldParams`, e.g. `[world.simulation] max_steps`), `[sensing]`, `[team] agents`, `[brain] hidden, scale` (`MLPPolicy.space(scale)`), `[scenarios] easy, full, seed, held_out, held_out_seed, generator`, `[fitness]` (the weights), `[strategy] population, offspring, crossover_probability, tournament_size, initial_step`, `[budget] generations`, `[run] seed, backend, device, precision, checkpoint_every` (generations), and a top-level `name` (default: the file's name). Every field has this document's default, so a config lists only what it changes, **except `scenarios.generator`** (M2b): its default is 2 for a config built in code, but **a config file without it means 1**, the generator before M2b, because every run recorded before M2b has a `config.toml` without it and must rebuild the scenarios it was trained and judged on (§2.2); the presets write `generator = 2`, and `train` prints the version on its start line; unknown keys and bad values are errors naming the key (`unknown key 'strategy.populaton'`, `team.agents must be an integer, got 'forty'`). The budget in generations is `population + (generations − 1) × offspring` evaluations: the initial population is the first generation.
 
-**Presets** (`configs/`): `smoke.toml` (10 agents, population 10, 4 scenarios, 200 steps, 3 generations, numpy float64: a few seconds; used by the tests), `pilot.toml` (the full sizes, 25 generations: the start of the learning curve) and `full.toml` (the full sizes, 400 generations, a checkpoint every 10: the overnight run, about 3 hours on Metal).
+**Presets** (`configs/`): `smoke.toml` (10 agents, population 10, 4 scenarios, 200 steps, 3 generations, numpy float64: a few seconds; used by the tests), `pilot.toml` (the full sizes, 25 generations: the start of the learning curve) and `full.toml` (the full sizes, 400 generations, a checkpoint every 10: the overnight run, about 6.2 hours on Metal since M2b, 3.2 hours before). All three write `generator = 2` and, from M2b, 4 easy + 28 full training scenarios (smoke: 2 + 2).
 
 **The run directory** (`runs/<name>-<timestamp>/` by default, ignored by git): `config.toml` (the effective config, every default filled in), `progress.csv`, `clips/` (from `watch`) and **`recording/`, Auxein's run directory** (event log, metadata, checkpoints; `auxein.open_run(".../recording")`). Auxein's recording has a directory of its own because Auxein starts a run only in an empty or new directory, and so that the two never mix.
 
@@ -401,6 +424,19 @@ torch on the CPU, with a note, if the run's GPU is not available here).
 - **`box-pushing showcase DIR [--generations ...] [--showcase ...] [--exploit TEXT] [--size ...]`** runs the report, the
   milestone clips, both montages and the charts, in that order (the generalisation chart needs the report), timing each and
   printing where everything is.
+- **`box-pushing compare DIR... [--held-out DIR_OR_CONFIG] [--milestones] [--out DIR]`** (M2b, `compare.py`): runs on **one
+  common held-out set**, since each run's own report uses its own set and runs of different generator versions (or, in M4,
+  strategies) do not compare otherwise. The common set is a reference's held-out set: a run directory or a config file
+  (`--held-out`), by default **the newest run** (by the recording's start). **Each champion keeps its own world, sensing,
+  brain and aggregator**, rebuilt from its own config through the report's `champions_on`; only the scenarios are shared, and
+  a run whose layouts cannot be the reference's (another team size, arena, box or agent size) is refused with the reason, as
+  is one whose training set shares a layout with the common set. The final champion of each run, or every milestone's with
+  `--milestones`, and the report's two baselines in the reference's world. Output under the reference run's `report/` (the
+  newest run's when the reference is a config file) or `--out`: `compare.md` and `compare.csv`, per champion: success on the
+  common set, mean progress, mean `max_pushers`, the median delivery step, deliveries by the box's starting distance (6–8,
+  8–10, 10–12 units), and its own training success (easy and full). Deterministic, and nothing is written into a recording
+  (tests). **`box-pushing showcase DIR DIR...`** with several runs makes each run's showcase, then compares them on the
+  newest's held-out set.
 - **The checks** (`tests/box_pushing/milestones_test.py`, `report_test.py`, `showcase_test.py`, `tests/common/rendering_test.py`;
   a smoke run on numpy, its 4 held-out scenarios): the log spacing, the last generation, skipped champions and the override;
   every champion and both baselines evaluated, the training numbers equal to the recording's, the held-out ones to Auxein's,
@@ -435,10 +471,11 @@ auxein_scenarios/
     train.py              # building a run from its config; train, resume, watch; progress.csv (§6.1)
     render.py             # clips, galleries and the sensing overlay; the montages' layouts (M3, §7.1)
     milestones.py         # the milestone generations and their champions, for every M3 command (§7.1)
+    compare.py            # several runs' champions on one common held-out set (M2b, §7.1)
     report.py             # the held-out report: champions and baselines on unseen scenarios, the recommendation (§7.1)
     showcase.py           # milestone clips, the montage, the charts, and showcase (all of them) (§7.1)
     demos.py              # the demo scenes; clips of random brains and of the senses-only controller (M1b)
-    cli.py                # box-pushing demo, scenarios, brains, senses, train, watch; report, milestones, montage, charts, showcase
+    cli.py                # box-pushing demo, scenarios, brains, senses, train, watch; report, milestones, montage, charts, showcase, compare
 configs/                  # training presets: smoke.toml, pilot.toml, full.toml (§6.1)
 benchmarks/               # scripts run by hand: physics_timing.py (M1a), probe.py (M1b, §10.3)
 tests/                    # smoke_test.py, common/, box_pushing/, benchmarks/
@@ -457,6 +494,10 @@ docs/auxein-issues.md     # the log of Auxein bugs and requests found here
 `common/rendering.py`, and the commands `box-pushing report`, `milestones`, `montage`, `charts` and `showcase` (§7.1). `watch`
 now replays through `train.replay`, the path the milestone clips use, and its panels carry the same honest footers.
 
+**Added at M2b:** `compare.py` and the command `box-pushing compare` (§7.1), `showcase` taking several runs, generator
+versions in `scenarios.py` (§2.2) with `box-pushing scenarios --generator`, and `report.champions_on` / `baselines_on`, the
+report's evaluation for any held-out set.
+
 **Adding a second scenario:** a subpackage `auxein_scenarios/<name>/`, its design document `docs/design/<name>.md`, its tests `tests/<name>/`, and an entry in the README's scenario list. A helper starts in its scenario and moves to `common/` when a second scenario needs it, not before.
 
 ---
@@ -470,10 +511,16 @@ now replays through `train.replay`, the path the milestone clips use, and its pa
 - **M2** is split in three:
   - **M2a** (done): the real fitness (§5.3), the TOML config and presets, `box-pushing train` with resume and extension, `box-pushing watch` for a run's current best (§6.1), the probe's fixes and the Metal numbers (§10.3), and a pilot run (§10.7).
   - **The owner's overnight run** (done) on the M4: `configs/full.toml`, 400 generations, 3.2 hours (§10.8).
-  - **M2b, next** (the report's recommendation, §10.8): what stops the team on full scenarios, before more training
-    scenarios: the step limit against the box's speed, the search (agents along the walls, layouts never moved), and how the
-    team pushes (a crowd around the box rather than a line behind it); then the training mix (more full scenarios), since the
-    gap sits at the threshold.
+  - **M2b** (done, code): **better scenarios, nothing else**: the box clearance and generator versions (§2.2), 4 easy + 28
+    full training scenarios (§4.2), and `box-pushing compare` (§7.1); the bridge and the new pilot (§10.9). The report had
+    recommended looking first at what stops the team (the push, the search, the step limit); M2b instead changes only the
+    data, so that the next run says whether better data alone closes the gap; the levers for the push and the search are
+    kept for the round after.
+  - **The owner's second overnight run**, next: `configs/full.toml` (generator 2, 4 + 28), about 6.2 hours, then
+    `box-pushing showcase` on it and `box-pushing compare` of both overnight runs on its held-out set (§10.9).
+  - **Then:** M4 if the second run generalises (at least half of the held-out scenarios delivered); otherwise the next lever,
+    one at a time: the time-bonus weight for the slow push (§10.8: a crowd around the box, twice slower than the hand-written
+    controller), the sensing range for the wall-hugging search.
 - **M3** (done): milestones, the held-out report with two baselines and a recommendation, milestone clips with honest
   labels, the sequence and grid montages, the charts, and `box-pushing showcase` (§7.1); run on the overnight run (§10.8).
 - **M4:** the CMA-ES comparison and polished clips for the website, once M2b's retrained run generalises (at least half of the
@@ -740,4 +787,59 @@ twice the time per generation).
 suite also ran): the report **114 s** (the nine champions on 64 scenarios 28 s, the baselines on both sets most of the rest),
 the nine milestone clips **570 s** (about a minute each, 1036 × 1216 px), the sequence montage **334 s** (1920 × 1080, 9
 segments, 20 MB), the grid montage **64 s** (1920 × 1080, 3 MB), the charts under a second: about **18 minutes** in all.
+
+### 10.9 Scenarios with clearance (M2b)
+
+M2b changes only the scenarios (§2.2, §4.2): fitness, sensing, the brain, the physics, the step limit and the GA settings are
+M2a's, so the second overnight run says what better data alone does.
+
+**The bridge: the overnight champion on solvable layouts.** Until a generator-2 run exists, the overnight run's final champion
+(generation 400, trained on generator 1's 4 + 12) is compared on a generator-2 held-out set built from `pilot.toml` (64 full
+scenarios, seed 2, the same seed as its own held-out set but drawn with the clearance):
+`box-pushing compare runs/full-20261017-201610 --held-out configs/pilot.toml` (Metal, 2 minutes).
+
+| held-out set | delivered | progress | never moved | undelivered end at | delivery step (median) | 6–8 units | 8–10 | 10–12 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| generator 1 (its own, §10.8) | 27/64 (42 %) | +0.59 | 5 | 43 % of the way | 708 | 15/22 | 9/22 | 3/20 |
+| **generator 2** | **30/64 (47 %)** | **+0.66** | **0** | 52 % of the way | 690 | 17/24 | 11/22 | 2/18 |
+| *senses-only controller*, generator 2 | 31/64 (48 %) | +0.65 | | | 392 | 15/24 | 8/22 | 8/18 |
+
+- **The unpushable layouts were part of the 42 %, not most of it.** On layouts where agents can always get behind the box,
+  the same champion delivers 30 of 64 (47 %), and **none is left unmoved** (5 were). It moves the box further (+0.66 against
+  +0.59), so clearance helps the episodes it does not finish too.
+- **Distance still decides**, now more sharply: 17 of 24 short pushes (6–8 units), 2 of 18 long ones (10–12). The hand-written
+  controller, at the same success overall, delivers 8 of the long ones in about half the time: the evolved team's slow push,
+  not the layouts, is what fails long distances (§10.8).
+- So **the second overnight run has two things to show**: whether more full layouts (28) close the generalisation gap, and
+  whether training on solvable layouts makes a better pusher. The bridge sets the bar: 47 % on generator-2 layouts for a
+  champion of generator 1's 4 + 12.
+
+**The new pilot** (`configs/pilot.toml`: 4 + 28 from generator 2, 25 generations, Metal) against M2a's pilot (§10.7, 4 + 12
+from generator 1):
+
+**23.4 minutes, 56 s per generation** (M2a's: 29 s), so 400 generations take about 6.2 hours; the start line's
+simulation-only estimate said 40 s (a generation is 1.4 times its simulation at 32 scenarios, 1.26 at 16: the start line's
+run estimate now uses 1.4). The recording is 41 MB for 2,500 evaluations, about 0.7 GB for 40,000.
+
+| generation | best so far (M2a → M2b) | generation's mean | champion's training success | mean `max_pushers` |
+|---:|---|---|---|---|
+| 1 | 0.111 → 0.079 | 0.034 → 0.026 | 0 % → 0 % | 2.0 → 1.6 |
+| 4 | 0.332 → 0.244 | 0.043 → 0.032 | 6 % → 6 % | 2.7 → 2.2 |
+| 9 | 0.652 → 0.365 | 0.055 → 0.053 | 19 % → 9 % | 3.2 → 3.4 |
+| 13 | 0.892 → 0.365 | 0.080 → 0.050 | 25 % → 9 % | 4.0 → 3.7 |
+| 25 | 0.912 → 0.648 | 0.104 → 0.065 | 25 % → 16 % | 3.8 → 3.5 |
+
+The scores do not compare directly: the easy scenarios are a quarter of M2a's training set and an eighth of M2b's, and they
+are where a young team scores. In deliveries, **learning starts as before, and further on the full scenarios**: at generation
+25 M2a's champion delivered its 4 easy scenarios and none of its 12 full ones (mean full progress +0.10); M2b's delivers its
+4 easy ones and **1 of its 28 full ones** (+0.15). The population's cooperation (`max_pushers`) rises at the same pace.
+
+**The second overnight run** (`configs/full.toml`, generator 2, 4 + 28, 400 generations): *to be filled in a docs-only
+follow-up once the owner has run it*:
+
+- `box-pushing showcase runs/full-<new>`: its report (held-out success, the gap, the baselines, the recommendation), its clips
+  (does the push change from a crowd around the box to a line behind it?), and the time it took;
+- `box-pushing compare runs/full-20261017-201610 runs/full-<new>` on the new run's held-out set (generator 2): the like-for-like
+  comparison of both overnight champions, against the bridge's 47 %;
+- the decision (§9): M4 if the new champion delivers at least half of its held-out scenarios, otherwise the next lever.
 
