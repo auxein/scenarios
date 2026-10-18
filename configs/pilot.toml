@@ -1,7 +1,13 @@
-# The full sizes for a short run, to see the start of the learning curve (about 12 minutes on the M4's GPU).
-#   uv run box-pushing train configs/pilot.toml
-# The defaults (docs/design/box-pushing.md §6) are the full sizes: 40 agents, a population of 100, 16 training scenarios
-# (4 easy and 12 full), 900 steps, torch float32 on Metal. Only the length differs.
+# The full sizes for a short run, to see the start of the learning curve (about 25 minutes on the M4's GPU).
+#   uv run --extra torch box-pushing train configs/pilot.toml
+# The defaults (docs/design/box-pushing.md §6) are the full sizes: 40 agents, a population of 100, 32 training scenarios
+# (4 easy and 28 full) from generator 2 (the box starts clear of walls and obstacles), 900 steps, torch float32 on Metal.
+# Only the length differs. The mix and the generator are written out: a config without `generator` means generator 1.
+
+[scenarios]
+easy = 4
+full = 28
+generator = 2
 
 [budget]
 generations = 25
