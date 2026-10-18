@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 from auxein_scenarios.common import theme
 from auxein_scenarios.common.rendering import figure
@@ -41,6 +41,10 @@ class Series:
     color: str = theme.SILVER
     style: Style = "solid"
     markers: bool = False
+
+
+def _plain(value: float, _: int | None = None) -> str:
+    return f"{value:g}"
 
 
 def line_chart(
@@ -92,6 +96,7 @@ def line_chart(
     else:
         if log_x:
             ax.set_xscale("log")
+            ax.xaxis.set_major_formatter(FuncFormatter(_plain))  # 1, 10, 100 rather than 10⁰, 10¹, 10²
         else:
             ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         for s in series:
