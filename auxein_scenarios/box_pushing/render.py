@@ -27,7 +27,17 @@ recorded by the same step loop that scores an episode), again with brightness on
 - the teammates it senses, joined to it by lines as bright as they weigh (`1 − d / r`): M1a's faint links, now meaning "sensed".
   With the overlay on, these replace the proximity links.
 
-Milestone clips of trained champions, the montage and the charts (M3) build on these.
+**Montages** (M3, design doc §7) draw trained champions at chosen generations, at a fixed video size (1920 × 1080 by
+default), in the same panels:
+
+- **`render_sequence_montage`**: one segment per milestone, one after another, each opened by a title card ("Generation 50",
+  its score and deliveries), the milestone's champion on the showcase scenarios, a header that names the generation, and a
+  small fitness-over-generations curve whose marker moves to the milestone being shown;
+- **`render_grid_montage`**: a few milestones side by side on **one** scenario, simultaneously: the clearest before and after,
+  with the same curve marking the generations shown.
+
+Every panel of a clip or montage of a run carries a footer saying plainly what it is (a training scenario, or a held-out one
+never seen in training) and how its episode ended.
 """
 
 # matplotlib's stubs type many methods' **kwargs as unknown (set_xticks, plot, text, savefig, grab_frame...), and imageio-ffmpeg
@@ -37,6 +47,7 @@ Milestone clips of trained champions, the montage and the charts (M3) build on t
 import math
 import textwrap
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
@@ -47,6 +58,7 @@ from matplotlib.collections import EllipseCollection, LineCollection, PolyCollec
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Polygon, Rectangle
+from matplotlib.text import Text
 
 from auxein_scenarios.box_pushing.config import SensingParams, WorldParams
 from auxein_scenarios.box_pushing.environment import TOUCH_TOLERANCE, SensingTrace
@@ -54,9 +66,19 @@ from auxein_scenarios.box_pushing.sensors import HIT_BOX, HIT_OBSTACLE
 from auxein_scenarios.box_pushing.world import Trajectory
 from auxein_scenarios.common import theme
 from auxein_scenarios.common.geometry import obb_contact, obb_corners
-from auxein_scenarios.common.rendering import figure, frame_records, grid_shape, save_png, write_mp4
+from auxein_scenarios.common.rendering import CurveInset, TitleCard, figure, frame_records, grid_shape, save_png, write_mp4
 
-__all__ = ["LINK_RANGE", "TOUCH_TOLERANCE", "render_clip", "render_gallery", "touching"]
+__all__ = [
+    "LINK_RANGE",
+    "TOUCH_TOLERANCE",
+    "Curve",
+    "Segment",
+    "render_clip",
+    "render_gallery",
+    "render_grid_montage",
+    "render_sequence_montage",
+    "touching",
+]
 
 Cell = tuple[int, int]
 """A panel's content: a candidate (row of the batch) on a scenario (column)."""
@@ -266,6 +288,19 @@ class _Panel:
         self.caption_status = ax.text(
             0.03, 0.885, "", transform=ax.transAxes, va="top", ha="left", fontproperties=theme.font("label", 7.0 * scale), zorder=6
         )
+        # the footer: what the panel is (training or held-out, said plainly) and how its episode ended
+        self.footer_note = ax.text(
+            0.03, 0.075, "", transform=ax.transAxes, va="bottom", ha="left", color=theme.SILVER,
+            fontproperties=theme.font("label", 6.5 * scale), zorder=6,
+        )  # fmt: skip
+        self.footer_outcome = ax.text(
+            0.03, 0.03, "", transform=ax.transAxes, va="bottom", ha="left", color=theme.SUBTLE,
+            fontproperties=theme.font("readout", 7.0 * scale), zorder=6,
+        )  # fmt: skip
+
+    def footer(self, note: str, outcome: str) -> None:
+        self.footer_note.set_text(theme.tracked(note) if note else "")
+        self.footer_outcome.set_text(outcome)
 
     def caption(self, readout: str, status: str, bright: bool) -> None:
         self.caption_label.set_text(theme.tracked(self.label))
@@ -350,6 +385,24 @@ def _header_height(width: float, kicker: str, title: str, lead: str) -> float:
     return 0.36 + (0.3 if kicker else 0.0) + 0.42 * headline + (0.12 if body else 0.0) + 0.21 * body + 0.3
 
 
+def _panel_at(
+    fig: Figure,
+    rect: tuple[float, float, float, float],
+    layout: Mapping[str, object],
+    params: WorldParams,
+    label: str,
+    size: float,
+    watch: Sequence[int] = (),
+    sensing: SensingParams | None = None,
+) -> _Panel:
+    """A panel in `rect` (figure fractions), `size` inches wide (for its caption's type)."""
+    ax = fig.add_axes(rect)
+    agents = len(cast("list[object]", layout["agents"]))
+    chosen = sensing or SensingParams()
+    overlays = [_Overlay(ax, chosen, agent, chosen.rays, params.arena.half) for agent in watch]
+    return _Panel(ax, layout, params, label, agents, size, overlays)
+
+
 def _panels(
     layouts: Sequence[Mapping[str, object]],
     params: WorldParams,
@@ -371,17 +424,14 @@ def _panels(
     fig.set_facecolor(theme.BACKGROUND)
     if kicker or title or subtitle:
         _header(fig, width, kicker, title, subtitle)
-    agents = len(cast("list[object]", layouts[0]["agents"]))
     panels: list[_Panel] = []
     for i, layout in enumerate(layouts):
         row, col = divmod(i, cols)
         left = GUTTER + col * (panel_size + GUTTER)
         bottom = height - header - (row + 1) * panel_size - row * GUTTER
-        ax = fig.add_axes((left / width, bottom / height, panel_size / width, panel_size / height))
         label = labels[i] if labels is not None else f"scenario {i}"
-        rays = (sensing or SensingParams()).rays
-        overlays = [_Overlay(ax, sensing or SensingParams(), agent, rays, params.arena.half) for agent in watch]
-        panels.append(_Panel(ax, layout, params, label, agents, panel_size, overlays))
+        rect = (left / width, bottom / height, panel_size / width, panel_size / height)
+        panels.append(_panel_at(fig, rect, layout, params, label, panel_size, watch, sensing))
     return fig, panels
 
 
@@ -405,6 +455,8 @@ def render_clip(
     columns: int | None = None,
     panel_size: float = 5.0,
     dpi: int = 100,
+    footers: Sequence[tuple[str, str]] | None = None,
+    records: int | None = None,
 ) -> Path:
     """An MP4 of a recorded trajectory, one panel per cell (a candidate on a scenario).
 
@@ -413,7 +465,8 @@ def render_clip(
     (for the static scene). With `senses` (recorded by `environment.WatchRecorder` alongside the trajectory, with the world's
     `sensing`), the sensing overlay is drawn for its watched agents. `kicker` (a short label), `title` (the headline) and
     `subtitle` (the lead: say there what to look for) go above the panels. Simulated time runs `speedup` times faster than real
-    time."""
+    time. `footers`, one `(note, outcome)` per cell, are written at the bottom of the panels (what the panel is, how its
+    episode ended); `records` shows only the first records (a candidate whose episodes ended before the batch's)."""
     if cells is None:
         cells = [(candidate, scenario) for scenario in (range(len(layouts)) if scenarios is None else scenarios)]
     chosen = list(cells)
@@ -422,7 +475,9 @@ def render_clip(
         raise ValueError(f"the senses have {senses.ray_x.shape[0]} records and the trajectory {trajectory.records}: record both together")
     watch = senses.agents if senses is not None else ()
     fig, panels = _panels([layouts[s] for _, s in chosen], params, names, columns, kicker, title, subtitle, panel_size, dpi, watch, sensing)
-    frames = frame_records(trajectory.step, params.simulation.dt, fps, speedup)
+    for panel, (note, outcome) in zip(panels, footers or [("", "")] * len(panels), strict=True):
+        panel.footer(note, outcome)
+    frames = frame_records(trajectory.step[: records or trajectory.records], params.simulation.dt, fps, speedup)
 
     def update(record: int) -> None:
         for panel, (row, scenario) in zip(panels, chosen, strict=True):
@@ -465,3 +520,183 @@ def render_gallery(
         draws = f"  ·  {attempts} draw{'s' if attempts != 1 else ''}" if attempts else ""
         panel.caption(f"{difficulty}  ·  {team} agents{draws}", "", False)
     return save_png(fig, path)
+
+
+# --- montages (M3) ---
+
+
+@dataclass(frozen=True)
+class Curve:
+    """The inset's data: `y` over `x` (the best score over generations), an optional `faint` second line (the generation's
+    mean) and quiet `marks` (the milestones' generations)."""
+
+    x: Sequence[float]
+    y: Sequence[float]
+    faint: Sequence[float] | None = None
+    marks: Sequence[float] = ()
+    label: str = "fitness over generations"
+
+
+@dataclass(frozen=True)
+class Segment:
+    """One milestone of a sequence montage: its candidate's row in the trajectory and how many records to show, the title
+    card's and header's text, one footer per showcase panel, and where its marker sits on the curve (its generation)."""
+
+    candidate: int
+    records: int
+    label: str
+    headline: str
+    lead: str
+    at: float
+    footers: Sequence[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
+
+
+GUTTER_MONTAGE = 0.25
+"""Inches between panels in a montage, and at its edges."""
+
+
+def _montage_figure(size: tuple[int, int], dpi: int = 100) -> tuple[Figure, float, float]:
+    width, height = size[0] / dpi, size[1] / dpi
+    fig = figure(width, height, dpi)
+    fig.set_facecolor(theme.BACKGROUND)
+    return fig, width, height
+
+
+def _montage_header(fig: Figure, width: float, height: float, kicker: str) -> tuple[Text, Text]:
+    """The header texts of a montage, at its top: a fixed label, a headline and a lead that segments change."""
+    left = GUTTER_MONTAGE * 2 / width
+    top = 1.0 - 0.38 / height
+    fig.text(left, top, theme.tracked(kicker), color=theme.SILVER, fontproperties=theme.font("label", 10), va="top")
+    headline = fig.text(left, top - 0.32 / height, "", color=theme.TEXT, fontproperties=theme.font("headline", 30), va="top")
+    lead = fig.text(left, top - 0.9 / height, "", color=theme.MUTED, fontproperties=theme.font("lead", 13), va="top")
+    return headline, lead
+
+
+def _row_of_panels(
+    fig: Figure,
+    width: float,
+    height: float,
+    layouts: Sequence[Mapping[str, object]],
+    labels: Sequence[str],
+    params: WorldParams,
+    top: float,
+    bottom: float,
+    watch: Sequence[int],
+    sensing: SensingParams | None,
+) -> list[_Panel]:
+    """Panels for `layouts`, centred in the band between `top` and `bottom` (inches from the figure's bottom), as large as fit."""
+    count = len(layouts)
+    rows, cols = grid_shape(count, min(count, 4))
+    g = GUTTER_MONTAGE
+    size = min((width - (cols + 1) * g) / cols, (top - bottom - (rows - 1) * g) / rows)
+    x0 = (width - cols * size - (cols - 1) * g) / 2.0
+    y0 = bottom + (top - bottom - rows * size - (rows - 1) * g) / 2.0
+    panels: list[_Panel] = []
+    for i, layout in enumerate(layouts):
+        row, col = divmod(i, cols)
+        left = x0 + col * (size + g)
+        lower = y0 + (rows - 1 - row) * (size + g)
+        panels.append(
+            _panel_at(fig, (left / width, lower / height, size / width, size / height), layout, params, labels[i], size, watch, sensing)
+        )
+    return panels
+
+
+def _inset(fig: Figure, width: float, height: float, curve: Curve, band: float) -> CurveInset:
+    g = GUTTER_MONTAGE * 2
+    rect = ((g + 0.35) / width, 0.45 / height, (width - 2 * g - 0.35) / width, (band - 0.75) / height)
+    return CurveInset(fig, rect, curve.x, curve.y, faint=curve.faint, marks=curve.marks, label=curve.label, xlabel="generation", scale=1.3)
+
+
+def render_sequence_montage(
+    trajectory: Trajectory,
+    layouts: Sequence[Mapping[str, object]],
+    params: WorldParams,
+    path: str | Path,
+    *,
+    scenarios: Sequence[int],
+    labels: Sequence[str],
+    segments: Sequence[Segment],
+    curve: Curve,
+    kicker: str,
+    senses: SensingTrace | None = None,
+    sensing: SensingParams | None = None,
+    size: tuple[int, int] = (1920, 1080),
+    fps: float = 30.0,
+    speedup: float = 4.0,
+    card_seconds: float = 1.5,
+) -> Path:
+    """The milestones one after another (module docstring): for each segment a title card for `card_seconds`, then its
+    candidate on `scenarios` (indices into the trajectory's scenarios, whose `layouts` and `labels` they are), with the curve's
+    marker at the segment's generation."""
+    fig, width, height = _montage_figure(size)
+    headline, lead = _montage_header(fig, width, height, kicker)
+    band = min(2.2, 0.22 * height)
+    watch = senses.agents if senses is not None else ()
+    panels = _row_of_panels(fig, width, height, [layouts[s] for s in scenarios], labels, params, height - 1.7, band, watch, sensing)
+    inset = _inset(fig, width, height, curve, band)
+    card = TitleCard(fig, scale=height / 10.8)
+    dt = params.simulation.dt
+    frames: list[tuple[int, int]] = []  # (segment, record), record -1 for the title card
+    for i, segment in enumerate(segments):
+        frames += [(i, -1)] * max(1, round(card_seconds * fps))
+        frames += [(i, r) for r in frame_records(trajectory.step[: segment.records], dt, fps, speedup, hold=0.6)]
+    shown: list[int] = [-1]
+
+    def update(frame: tuple[int, int]) -> None:
+        i, record = frame
+        segment = segments[i]
+        if record < 0:
+            card.show(segment.label, segment.headline, segment.lead)
+            return
+        card.hide()
+        if shown[0] != i:
+            shown[0] = i
+            headline.set_text(segment.headline)
+            lead.set_text(segment.lead)
+            inset.mark(segment.at)
+            for panel, (note, outcome) in zip(panels, segment.footers or [("", "")] * len(panels), strict=True):
+                panel.footer(note, outcome)
+        for panel, scenario in zip(panels, scenarios, strict=True):
+            panel.update(trajectory, record, segment.candidate, scenario, dt, senses)
+
+    return write_mp4(fig, update, frames, path, fps)
+
+
+def render_grid_montage(
+    trajectory: Trajectory,
+    layouts: Sequence[Mapping[str, object]],
+    params: WorldParams,
+    path: str | Path,
+    *,
+    scenario: int,
+    candidates: Sequence[int],
+    labels: Sequence[str],
+    footers: Sequence[tuple[str, str]],
+    curve: Curve,
+    kicker: str,
+    title: str,
+    lead: str,
+    records: int | None = None,
+    size: tuple[int, int] = (1920, 1080),
+    fps: float = 30.0,
+    speedup: float = 3.0,
+) -> Path:
+    """`candidates` (rows of the trajectory) side by side on one scenario, simultaneously (module docstring)."""
+    fig, width, height = _montage_figure(size)
+    headline, lead_text = _montage_header(fig, width, height, kicker)
+    headline.set_text(title)
+    lead_text.set_text(lead)
+    band = min(2.2, 0.22 * height)
+    panels = _row_of_panels(fig, width, height, [layouts[scenario]] * len(candidates), labels, params, height - 1.7, band, (), None)
+    for panel, (note, outcome) in zip(panels, footers, strict=True):
+        panel.footer(note, outcome)
+    inset = _inset(fig, width, height, curve, band)
+    inset.mark(float(curve.marks[-1]) if curve.marks else float(curve.x[-1]))
+    frames = frame_records(trajectory.step[: records or trajectory.records], params.simulation.dt, fps, speedup)
+
+    def update(record: int) -> None:
+        for panel, candidate in zip(panels, candidates, strict=True):
+            panel.update(trajectory, record, candidate, scenario, params.simulation.dt)
+
+    return write_mp4(fig, update, frames, path, fps)

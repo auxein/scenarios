@@ -20,20 +20,33 @@ And for training (M2a, `train.py`):
 - `box-pushing watch DIR [--generation K] [--scenarios train:0 held:0 ...] [--overlay]` renders the best brain so far, with
   the run's backend; safe while the run is training.
 
-The watching commands write to `out/` by default and the training ones to `runs/`, both ignored by git. Milestone clips, the
-montage and the charts from a recording come with M3.
+And for showing a run (M3, `report.py`, `showcase.py`), all written under the run directory:
+
+- `box-pushing report DIR [--generations 1,50,400] [--exploit TEXT]`: the held-out report of the milestones' champions and
+  two baselines, into `DIR/report/`;
+- `box-pushing milestones DIR [--generations ...] [--showcase train:0 held:3 best-held ...] [--overlay]`: one clip per
+  milestone, into `DIR/clips/milestones/`;
+- `box-pushing montage DIR [--layout sequence|grid] [--size 1920x1080] [--generations ...] [--showcase ...]`: into
+  `DIR/clips/montage-<layout>.mp4`;
+- `box-pushing charts DIR`: fitness, delivery, cooperation and generalisation charts, into `DIR/charts/`;
+- `box-pushing showcase DIR`: all four, in that order (the report first), printing where everything is.
+
+The watching commands write to `out/` by default and the training ones to `runs/`, both ignored by git.
 """
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from auxein.backend import Backend
 
-from auxein_scenarios.box_pushing import demos, scenarios, train
+from auxein_scenarios.box_pushing import demos, scenarios, showcase, train
+from auxein_scenarios.box_pushing import report as held_out_report
 from auxein_scenarios.box_pushing.config import ConfigError, WorldParams, load_config
+from auxein_scenarios.box_pushing.milestones import MilestoneError, parse_generations
 from auxein_scenarios.box_pushing.render import render_gallery
+from auxein_scenarios.common.rendering import parse_size
 
 __all__ = ["main"]
 
@@ -153,6 +166,76 @@ def _watch(args: argparse.Namespace) -> int:
     return 0
 
 
+SHOWING_ERRORS = (ConfigError, MilestoneError, ValueError, train.TrainingError, FileNotFoundError)
+
+
+def _showing(handler: Callable[[argparse.Namespace], None]) -> Callable[[argparse.Namespace], int]:
+    """Runs an M3 command, printing its errors (a missing run, a bad generation list) instead of a traceback."""
+
+    def run(args: argparse.Namespace) -> int:
+        try:
+            handler(args)
+        except SHOWING_ERRORS as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
+        return 0
+
+    return run
+
+
+def _generations(args: argparse.Namespace) -> list[int] | None:
+    return parse_generations(args.generations) if args.generations else None
+
+
+def _report_command(args: argparse.Namespace) -> None:
+    built = held_out_report.build_report(args.run_dir, generations=_generations(args))
+    target = held_out_report.write_report(built, args.exploit)
+    r = built.recommendation(args.exploit)
+    final = built.final
+    print(f"{target / held_out_report.MARKDOWN_FILE}")
+    print(
+        f"  final champion (generation {final.generation}): held-out {final.held().delivered}/{final.held().episodes} delivered, "
+        f"full training {final.train('full').delivered}/{final.train('full').episodes}, gap {final.gap:+.2f}"
+    )
+    print(f"  recommendation: {r.next_milestone} ({r.reason})")
+
+
+def _milestones_command(args: argparse.Namespace) -> None:
+    showcase.milestone_clips(
+        args.run_dir, generations=_generations(args), showcase=args.showcase, overlay=args.overlay, fps=args.fps, speedup=args.speedup
+    )
+
+
+def _montage_command(args: argparse.Namespace) -> None:
+    showcase.montage(
+        args.run_dir, layout=args.layout, size=parse_size(args.size), generations=_generations(args), showcase=args.showcase, fps=args.fps
+    )
+
+
+def _charts_command(args: argparse.Namespace) -> None:
+    showcase.charts(args.run_dir)
+
+
+def _showcase_command(args: argparse.Namespace) -> None:
+    showcase.showcase(
+        args.run_dir, generations=_generations(args), showcase_tokens=args.showcase, exploit=args.exploit, size=parse_size(args.size)
+    )
+
+
+def _run_options(command: argparse.ArgumentParser, *, showcase_scenarios: bool = True) -> None:
+    command.add_argument("run_dir", help="the run directory (runs/<name>-<timestamp>)")
+    command.add_argument(
+        "--generations", default=None, help="milestone generations, e.g. 1,50,400 (default: 1, 2, 5, 10, 20, 50, ... and the last)"
+    )
+    if showcase_scenarios:
+        command.add_argument(
+            "--showcase",
+            nargs="+",
+            default=None,
+            help="showcase scenarios: train:<i>, held:<i>, best-held, worst-held (default: the first easy and full, 2 held-out)",
+        )
+
+
 def _clip_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--out", default="out", help="output directory (default: out/)")
     command.add_argument("--fps", type=float, default=30.0, help="frames per second (default: 30)")
@@ -163,7 +246,7 @@ def _clip_options(command: argparse.ArgumentParser) -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="box-pushing", description="Cooperative box-pushing: watch the world.")
+    root = argparse.ArgumentParser(prog="box-pushing", description="Cooperative box-pushing: watch the world, train, and show a run.")
     commands = root.add_subparsers(dest="command", required=True)
 
     demo = commands.add_parser("demo", help="render demo clips of the physics, driven by scripted controllers")
@@ -210,6 +293,35 @@ def parser() -> argparse.ArgumentParser:
     watcher.add_argument("--fps", type=float, default=30.0, help="frames per second (default: 30)")
     watcher.add_argument("--speedup", type=float, default=2.0, help="simulated seconds per video second (default: 2)")
     watcher.set_defaults(handler=_watch)
+
+    reporter = commands.add_parser("report", help="the held-out report: milestone champions and baselines on unseen scenarios")
+    _run_options(reporter, showcase_scenarios=False)
+    reporter.add_argument("--exploit", default=None, help="an exploit seen in the clips (e.g. 'ramming'): recommends fixing it first")
+    reporter.set_defaults(handler=_showing(_report_command))
+
+    clips = commands.add_parser("milestones", help="one clip per milestone, of its champion on the same showcase scenarios")
+    _run_options(clips)
+    clips.add_argument("--overlay", action="store_true", help="draw what agent 0 senses")
+    clips.add_argument("--fps", type=float, default=30.0, help="frames per second (default: 30)")
+    clips.add_argument("--speedup", type=float, default=2.0, help="simulated seconds per video second (default: 2)")
+    clips.set_defaults(handler=_showing(_milestones_command))
+
+    montager = commands.add_parser("montage", help="the milestones in sequence, or side by side on one scenario")
+    _run_options(montager)
+    montager.add_argument("--layout", choices=["sequence", "grid"], default="sequence")
+    montager.add_argument("--size", default="1920x1080", help="video size in pixels (default: 1920x1080)")
+    montager.add_argument("--fps", type=float, default=30.0, help="frames per second (default: 30)")
+    montager.set_defaults(handler=_showing(_montage_command))
+
+    charter = commands.add_parser("charts", help="fitness, delivery, cooperation and generalisation charts (PNG and SVG)")
+    charter.add_argument("run_dir", help="the run directory")
+    charter.set_defaults(handler=_showing(_charts_command))
+
+    shower = commands.add_parser("showcase", help="the report, milestone clips, both montages and the charts of a run")
+    _run_options(shower)
+    shower.add_argument("--exploit", default=None, help="an exploit seen in the clips (for the report's recommendation)")
+    shower.add_argument("--size", default="1920x1080", help="the montages' size in pixels (default: 1920x1080)")
+    shower.set_defaults(handler=_showing(_showcase_command))
 
     gallery = commands.add_parser("scenarios", help="render a gallery of generated scenario layouts")
     gallery.add_argument("--difficulty", choices=sorted(DIFFICULTIES), default="full")

@@ -59,6 +59,29 @@ uv run box-pushing train --resume runs/full-<timestamp> --generations 600   # ex
 `runs/<run>/progress.csv` is rewritten after every generation (best and mean score, success rate, `max_pushers`...), so a
 run can be charted while it goes on.
 
+## Showing a run
+
+Once a run has trained, one command makes its held-out report, its milestone clips, both montages and its charts, all under
+the run directory (with the run's backend: torch on Metal for the presets, hence `--extra torch`):
+
+```
+uv run --extra torch box-pushing showcase runs/full-<timestamp>
+```
+
+Or each step on its own:
+
+```
+uv run --extra torch box-pushing report runs/full-<timestamp>       # report/: champions and baselines on 64 unseen scenarios
+uv run --extra torch box-pushing milestones runs/full-<timestamp>   # clips/milestones/gen-<k>.mp4, one per milestone
+uv run --extra torch box-pushing montage runs/full-<timestamp>      # clips/montage-sequence.mp4 (--layout grid: side by side)
+uv run --extra torch box-pushing charts runs/full-<timestamp>       # charts/: fitness, delivery, cooperation, generalisation
+```
+
+Milestones are generations 1, 2, 5, 10, 20, 50, 100, 200, ... and the last (`--generations 1,50,400` to choose); clips show the
+same scenarios at every milestone (`--showcase train:0 held:3 best-held worst-held` to choose), and every panel says whether it
+is a training scenario or a held-out one never seen in training. The report's `report.md` ends with a recommendation for the
+next step.
+
 ## Checks
 
 ```

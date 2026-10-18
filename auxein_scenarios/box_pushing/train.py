@@ -30,6 +30,7 @@ from typing import Any, cast
 
 import auxein
 import numpy as np
+import numpy.typing as npt
 from auxein.backend import Backend
 from auxein.callbacks import print_progress
 from auxein.driver.progress import Callback, Progress
@@ -48,13 +49,21 @@ __all__ = [
     "RECORDING",
     "RUNS",
     "ProgressCsv",
+    "Replay",
     "Showcase",
     "Training",
     "TrainingError",
     "build",
+    "default_showcase",
+    "outcome",
     "estimate_generation_seconds",
+    "progress_rows",
+    "recorded_backend",
+    "replay_backend",
+    "replay",
     "resolve_backend",
     "resume",
+    "showcase_scenarios",
     "train",
     "watch",
 ]
@@ -208,16 +217,7 @@ class ProgressCsv:
         self.write()
 
     def write(self) -> str:
-        with open_run(self.recording) as reader:
-            rows = reader.generation_history()
-            for row in rows:
-                generation = int(cast("int", row["generation"]))
-                if generation not in self._extra:
-                    self._extra[generation] = _descriptor_columns(reader.evaluations_in(generation), reader.best_up_to(generation))
-        out: list[dict[str, object]] = []
-        for row in rows:
-            generation = int(cast("int", row["generation"]))
-            out.append({**row, **self._extra[generation], "elapsed": self._elapsed.get(generation, math.nan)})
+        out = self.rows()
         buffer = io.StringIO()
         if out:
             writer = csv.DictWriter(buffer, fieldnames=list(out[0]), lineterminator="\n")
@@ -228,6 +228,39 @@ class ProgressCsv:
         temporary.write_text(text)
         temporary.replace(self.path)  # atomic: a reader never sees half a file
         return text
+
+    def rows(self) -> list[dict[str, object]]:
+        """The file's rows, from the recording (`elapsed` only for the generations this session saw)."""
+        with open_run(self.recording) as reader:
+            rows = reader.generation_history()
+            for row in rows:
+                generation = int(cast("int", row["generation"]))
+                if generation not in self._extra:
+                    self._extra[generation] = _descriptor_columns(reader.evaluations_in(generation), reader.best_up_to(generation))
+        out: list[dict[str, object]] = []
+        for row in rows:
+            generation = int(cast("int", row["generation"]))
+            out.append({**row, **self._extra[generation], "elapsed": self._elapsed.get(generation, math.nan)})
+        return out
+
+
+def progress_rows(run_dir: str | Path) -> list[dict[str, float]]:
+    """The run's per-generation rows as numbers: from its `progress.csv`, or rebuilt from the recording if the file is
+    missing (without writing it, so the active times it holds are never lost)."""
+    path = Path(run_dir) / PROGRESS_FILE
+    if path.exists():
+        with open(path) as file:
+            raw: list[dict[str, object]] = [dict(row) for row in csv.DictReader(file)]
+    else:
+        raw = ProgressCsv(Path(run_dir)).rows()
+
+    def number(value: object) -> float:
+        try:
+            return float(cast("float", value)) if value not in ("", None) else math.nan
+        except (TypeError, ValueError):
+            return math.nan
+
+    return [{key: number(value) for key, value in row.items()} for row in raw]
 
 
 def _descriptor_columns(evaluations: Sequence[RecordedEvaluation], champion: RecordedEvaluation | None) -> dict[str, object]:
@@ -308,6 +341,16 @@ def recorded_backend(run_dir: Path) -> Backend:
     return Backend(cast("Any", where["name"]), where["device"], cast("Any", metadata["precision"]))
 
 
+def replay_backend(run_dir: str | Path) -> tuple[Backend, str | None]:
+    """The backend to replay a recorded run's brains on (clips, the held-out report): the run's own backend, precision and
+    device (design doc §7), or torch on the CPU, with a note saying so, when the run's GPU is not available here."""
+    recorded = recorded_backend(Path(run_dir))
+    if recorded.name != "torch" or recorded.device == "cpu":
+        return recorded, None
+    resolved, note = resolve_backend(load_config(Path(run_dir) / CONFIG_FILE))
+    return Backend("torch", resolved.device, recorded.precision), note
+
+
 def resume(
     run_dir: str | Path,
     *,
@@ -375,6 +418,19 @@ class Showcase:
             raise ValueError(f"a showcase scenario is train:<index> or held:<index>, got {text!r}")
         return Showcase(name, int(index))
 
+    @property
+    def note(self) -> str:
+        """The panel's honest label (design doc §7): a clip never passes a training scenario off as an unseen one."""
+        return "training scenario" if self.set == "train" else "held-out: never seen in training"
+
+
+def outcome(measurements: dict[str, float]) -> str:
+    """How an episode ended, for a panel's footer: delivered at step k, or the progress made."""
+    d0, d = measurements["initial_distance"], measurements["final_distance"]
+    if measurements["delivered"] > 0.5:
+        return f"delivered at step {int(measurements['steps'])}"
+    return f"not delivered  ·  progress {(d0 - d) / d0 if d0 > 0 else 0.0:+.2f}"
+
 
 def default_showcase(config: TrainingConfig) -> list[Showcase]:
     """Two training scenarios (the first easy and the first full, if both are in the set) and the first two held-out ones."""
@@ -385,7 +441,8 @@ def default_showcase(config: TrainingConfig) -> list[Showcase]:
     return [*chosen, Showcase("held", 0), Showcase("held", min(1, s.held_out - 1))]
 
 
-def _showcase_scenarios(config: TrainingConfig, chosen: Sequence[Showcase]) -> list[Scenario]:
+def showcase_scenarios(config: TrainingConfig, chosen: Sequence[Showcase]) -> list[Scenario]:
+    """The scenarios of `chosen`, from the run's training and held-out sets (generated from the config)."""
     train_set = training_set(config)
     held = [c.index for c in chosen if c.set == "held"]
     held_set = None
@@ -402,6 +459,60 @@ def _showcase_scenarios(config: TrainingConfig, chosen: Sequence[Showcase]) -> l
             raise ValueError(f"the training set has {len(source)} scenarios, not {c.index + 1}")
         out.append(source[c.index])
     return out
+
+
+@dataclass(frozen=True)
+class Replay:
+    """Champions of a run replayed on showcase scenarios through the environment's step loop, on the run's backend (design
+    doc §7): what `watch`, the milestone clips and the montage draw. Row `i` of the trajectory and of `measurements` (host
+    arrays, `(n, s)`) is the `i`th genome replayed; column `j` is `scenarios[j]`, chosen as `showcase[j]`."""
+
+    config: TrainingConfig
+    backend: Backend
+    showcase: list[Showcase]
+    scenarios: list[Scenario]
+    trajectory: Any  # world.Trajectory (Any: train.py imports the world lazily, through environment)
+    senses: Any  # environment.SensingTrace | None
+    measurements: dict[str, Any]
+
+    @property
+    def labels(self) -> list[str]:
+        return [f"{s.id} · {s.params['difficulty']}" for s in self.scenarios]
+
+    def episode(self, row: int, column: int) -> dict[str, float]:
+        return {name: float(values[row, column]) for name, values in self.measurements.items()}
+
+    def footers(self, row: int) -> list[tuple[str, str]]:
+        """Each panel's footer for the `row`th genome: its honest label and how its episode ended."""
+        return [(c.note, outcome(self.episode(row, j))) for j, c in enumerate(self.showcase)]
+
+    def records(self, row: int) -> int:
+        """How many records the `row`th genome's clip needs: up to the step its last showcase episode ended (the batch runs
+        on until every genome's episodes have ended, frozen once they have)."""
+        done = np.asarray(self.trajectory.done)[:, row, :].all(axis=1)
+        ended = np.nonzero(done)[0]
+        return int(ended[0]) + 1 if ended.size else int(self.trajectory.records)
+
+
+def replay(
+    run_dir: str | Path, genomes: Sequence[object], showcase: Sequence[Showcase], *, overlay: bool = False, out: Print = print
+) -> Replay:
+    """Replays `genomes` (recorded genomes of the run) on `showcase`, all in one batch, with the sensing overlay of agent 0
+    if `overlay`."""
+    run = Path(run_dir)
+    config = load_config(run / CONFIG_FILE)
+    backend, note = replay_backend(run)
+    if note:
+        out(f"note: {note}; the clip may differ from what was scored (design doc §7)")
+    chosen = list(showcase)
+    selected = showcase_scenarios(config, chosen)
+    world = BoxPushingWorld(config.world, config.sensing)
+    policy = brain(config.sensing, config.brain.hidden)
+    rows: list[npt.NDArray[np.float64]] = [np.asarray(g, dtype=np.float64).reshape(-1) for g in genomes]
+    stacked = backend.asarray(np.asarray(rows, dtype=np.float64))
+    trajectory, senses, rollout = world.watch(policy.decode_batch(stacked), selected, agents=(0,) if overlay else ())
+    measured = {name: np.asarray(backend.to_numpy(v), dtype=np.float64) for name, v in rollout.measurements.items()}
+    return Replay(config, backend, chosen, selected, trajectory, senses, measured)
 
 
 def watch(
@@ -430,33 +541,19 @@ def watch(
         if not 1 <= k <= told:
             raise TrainingError(f"{run} has generations 1 to {told}, not {k}")
         best = reader.best_up_to(k)
-        backend = recorded_backend(run)
     if best is None:
         raise TrainingError(f"no candidate of {run} succeeded by generation {k}")
-    if backend.name == "torch" and backend.device != "cpu":
-        resolved, note = resolve_backend(config)
-        if note:
-            out(f"note: {note}; the clip may differ from what was scored (design doc §7)")
-            backend = Backend("torch", "cpu", backend.precision)
-        else:
-            backend = Backend("torch", resolved.device, backend.precision)
-    chosen = list(showcase) if showcase is not None else default_showcase(config)
-    selected = _showcase_scenarios(config, chosen)
-    world = BoxPushingWorld(config.world, config.sensing)
-    policy = brain(config.sensing, config.brain.hidden)
-    genome = backend.asarray(np.asarray(best.genome, dtype=np.float64).reshape(1, -1))
-    trajectory, senses, rollout = world.watch(policy.decode_batch(genome), selected, agents=(0,) if overlay else ())
-    labels = [f"{s.id} · {s.params['difficulty']}" for s in selected]
+    played = replay(run, [best.genome], list(showcase) if showcase is not None else default_showcase(config), overlay=overlay, out=out)
     score = best.objectives["score"]
     target = Path(path) if path is not None else run / "clips" / f"best-gen{k:04d}{'-overlay' if overlay else ''}.mp4"
     clip = render_clip(
-        trajectory,
-        [dict(s.params) for s in selected],
+        played.trajectory,
+        [dict(s.params) for s in played.scenarios],
         config.world,
         target,
-        cells=[(0, i) for i in range(len(selected))],
-        labels=labels,
-        senses=senses,
+        cells=[(0, i) for i in range(len(played.scenarios))],
+        labels=played.labels,
+        senses=played.senses,
         sensing=config.sensing,
         kicker=f"Run · {config.name}",
         title=f"The best brain after generation {k}",
@@ -465,11 +562,12 @@ def watch(
         fps=fps,
         speedup=speedup,
         columns=2,
+        footers=played.footers(0),
     )
-    measured = {name: np.asarray(backend.to_numpy(v), dtype=np.float64)[0] for name, v in rollout.measurements.items()}
     out(str(clip))
-    for i, label in enumerate(labels):
-        d0, d = measured["initial_distance"][i], measured["final_distance"][i]
-        state = f"delivered at step {int(measured['steps'][i])}" if measured["delivered"][i] > 0.5 else "not delivered"
-        out(f"  {label}: {state}, progress {(d0 - d) / d0:+.2f}, most touching the box {int(measured['max_pushers'][i])}")
+    for i, label in enumerate(played.labels):
+        m = played.episode(0, i)
+        d0, d = m["initial_distance"], m["final_distance"]
+        state = f"delivered at step {int(m['steps'])}" if m["delivered"] > 0.5 else "not delivered"
+        out(f"  {label}: {state}, progress {(d0 - d) / d0:+.2f}, most touching the box {int(m['max_pushers'])}")
     return clip
