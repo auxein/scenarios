@@ -61,7 +61,10 @@ __all__ = [
     "Report",
     "Results",
     "Subject",
+    "bands",
+    "baselines_on",
     "build_report",
+    "champions_on",
     "held_out_set",
     "read_episodes",
     "recommend",
@@ -292,6 +295,66 @@ def _simulated(world: BoxPushingWorld, policy: Any, scenario_set: ScenarioSet, b
     ]
 
 
+def champions_on(
+    run_dir: str | Path,
+    milestones: Sequence[Milestone],
+    held: ScenarioSet,
+    *,
+    backend: Backend | None = None,
+    out: Callable[[str], None] = print,
+) -> tuple[list[Subject], HeldOutReport]:
+    """`milestones`' champions of the run in `run_dir` on the scenario set `held`, through Auxein's `evaluate_held_out`, with
+    an evaluator rebuilt from **the run's own config** (its world, sensing, brain and aggregator) and the run's replay
+    backend unless `backend` is given; their training results come from the run's recording. Used by the report (the run's own
+    held-out set) and by `compare` (a set common to several runs)."""
+    run = Path(run_dir)
+    config = load_config(run / train.CONFIG_FILE)
+    recording = run / train.RECORDING
+    on = backend if backend is not None else train.replay_backend(run)[0]
+    world = BoxPushingWorld(config.world, config.sensing)
+    policy = brain(config.sensing, config.brain.hidden)
+    evaluator = auxein.EpisodeEvaluator(policy, world, held, fitness.aggregator(config.fitness, config.max_steps))
+    score, floor = _scorer(config), config.fitness.progress_floor
+    train_facts, held_facts = _layout_facts(train.training_set(config)), _layout_facts(held)
+    plural = "s" if len(milestones) != 1 else ""
+    out(f"held-out: {len(milestones)} champion{plural} of {run.name} on {len(held)} scenarios ({on.name} {on.device} {on.precision})")
+    judged = evaluate_held_out(recording, evaluator, held, candidates=[m.candidate_id for m in milestones], backend=on, write=False)
+    by_id = {c.candidate_id: c for c in judged.candidates}
+    subjects: list[Subject] = []
+    with open_run(recording) as reader:
+        for m in milestones:
+            recorded = reader.episodes(m.candidate_id)
+            train_measurements = [dict(e.measurements) if e.status is Status.OK else None for e in recorded]
+            held_measurements = [dict(s.measurements) if s.status is Status.OK else None for s in by_id[m.candidate_id].scenarios]
+            subjects.append(_champion(m, train_facts, held_facts, train_measurements, held_measurements, score, floor))
+    return subjects, judged
+
+
+def baselines_on(
+    config: TrainingConfig, training: ScenarioSet, held: ScenarioSet, backend: Backend, out: Callable[[str], None] = print
+) -> list[Subject]:
+    """The two baselines (module docstring) on `training` and `held`, in `config`'s world, sensing and brain space."""
+    world = BoxPushingWorld(config.world, config.sensing)
+    policy = brain(config.sensing, config.brain.hidden)
+    score, floor = _scorer(config), config.fitness.progress_floor
+    train_facts, held_facts = _layout_facts(training), _layout_facts(held)
+    out(f"baselines: {BASELINE_BRAINS} random brains and the senses-only controller, on both sets")
+    genomes = policy.space(config.brain.scale).sample_genomes(
+        BASELINE_BRAINS, RandomStream(np.random.SeedSequence(BASELINE_SEED), backend), backend
+    )
+    random_brains = policy.decode_batch(genomes)
+    senses = scripted.SensesController(1, backend, world.sensing, config.world)
+    subjects: list[Subject] = []
+    for kind, name, agents in (
+        ("random brains", f"{BASELINE_BRAINS} random brains", random_brains),
+        ("senses only", "senses-only controller", senses),
+    ):
+        on_train = [e for per in _simulated(world, agents, training, backend) for e in _episodes(train_facts, per, score, floor)]
+        on_held = [e for per in _simulated(world, agents, held, backend) for e in _episodes(held_facts, per, score, floor)]
+        subjects.append(Subject(cast("Any", kind), name, None, None, tuple(on_train), tuple(on_held)))
+    return subjects
+
+
 def build_report(
     run_dir: str | Path,
     *,
@@ -301,48 +364,16 @@ def build_report(
     """Evaluates the run's milestone champions and the baselines (module docstring). Writes nothing: see `write_report`."""
     run = Path(run_dir)
     config = load_config(run / train.CONFIG_FILE)
-    recording = run / train.RECORDING
-    milestones = find_milestones(recording, generations)
+    milestones = find_milestones(run / train.RECORDING, generations)
     backend, note = train.replay_backend(run)
     notes = [f"{note}; the numbers may differ slightly from the run's device"] if note else []
     for line in notes:
         out(f"note: {line}")
-
-    training = train.training_set(config)
-    held = held_out_set(config)
+    training, held = train.training_set(config), held_out_set(config)
     scenarios.check_disjoint(training, held)
-    world = BoxPushingWorld(config.world, config.sensing)
-    policy = brain(config.sensing, config.brain.hidden)
-    aggregator = fitness.aggregator(config.fitness, config.max_steps)
-    evaluator = auxein.EpisodeEvaluator(policy, world, held, aggregator)
-    score, floor = _scorer(config), config.fitness.progress_floor
-    train_facts, held_facts = _layout_facts(training), _layout_facts(held)
-
-    out(f"held-out: {len(milestones)} champions on {len(held)} unseen scenarios ({backend.name} {backend.device} {backend.precision})")
-    report = evaluate_held_out(recording, evaluator, held, candidates=[m.candidate_id for m in milestones], backend=backend, write=False)
-    by_id = {c.candidate_id: c for c in report.candidates}
-    subjects: list[Subject] = []
-    with open_run(recording) as reader:
-        for m in milestones:
-            recorded = reader.episodes(m.candidate_id)
-            train_measurements = [dict(e.measurements) if e.status is Status.OK else None for e in recorded]
-            held_measurements = [dict(s.measurements) if s.status is Status.OK else None for s in by_id[m.candidate_id].scenarios]
-            subjects.append(_champion(m, train_facts, held_facts, train_measurements, held_measurements, score, floor))
-
-    out(f"baselines: {BASELINE_BRAINS} random brains and the senses-only controller, on both sets")
-    genomes = policy.space(config.brain.scale).sample_genomes(
-        BASELINE_BRAINS, RandomStream(np.random.SeedSequence(BASELINE_SEED), backend), backend
-    )
-    random_brains = policy.decode_batch(genomes)
-    senses = scripted.SensesController(1, backend, world.sensing, config.world)
-    for kind, name, agents in (
-        ("random brains", f"{BASELINE_BRAINS} random brains", random_brains),
-        ("senses only", "senses-only controller", senses),
-    ):
-        on_train = [e for per in _simulated(world, agents, training, backend) for e in _episodes(train_facts, per, score, floor)]
-        on_held = [e for per in _simulated(world, agents, held, backend) for e in _episodes(held_facts, per, score, floor)]
-        subjects.append(Subject(cast("Any", kind), name, None, None, tuple(on_train), tuple(on_held)))
-    return Report(run, config, backend, tuple(subjects), report, tuple(notes))
+    champions, judged = champions_on(run, milestones, held, backend=backend, out=out)
+    baselines = baselines_on(config, training, held, backend, out)
+    return Report(run, config, backend, tuple(champions + baselines), judged, tuple(notes))
 
 
 def _champion(
@@ -462,7 +493,7 @@ def _table(report: Report) -> list[str]:
     return lines
 
 
-def _bands(episodes: Sequence[Episode]) -> list[tuple[str, int, int]]:
+def bands(episodes: Sequence[Episode]) -> list[tuple[str, int, int]]:
     """Held-out success by box–target distance, in thirds of the full difficulty's range (6–8, 8–10, 10–12 units)."""
     edges = [6.0, 8.0, 10.0, math.inf]
     out: list[tuple[str, int, int]] = []
@@ -534,13 +565,13 @@ def _findings(report: Report, exploit: str | None) -> list[str]:
         + ". "
         + _baseline_sentence(final, baselines)
     )
-    bands = _bands(final.held_out)
+    by_distance = bands(final.held_out)
     short = [e.progress for e in final.held_out if e.ok and not e.delivered]
-    if bands:
+    if by_distance:
         partway = f" The undelivered ones end {float(np.mean(short)):.0%} of the way on average." if short else ""
         paragraphs.append(
             "**Distance.** The final champion's held-out deliveries by the box's starting distance to the target: "
-            + ", ".join(f"{name} units {d}/{n}" + (f" ({d / n:.0%})" if n else "") for name, d, n in bands)
+            + ", ".join(f"{name} units {d}/{n}" + (f" ({d / n:.0%})" if n else "") for name, d, n in by_distance)
             + f".{partway} Success that falls with distance, with the rest partway, points at the {report.config.max_steps}-step "
             "limit as well as the skill."
         )
