@@ -233,9 +233,9 @@ class Report:
 
 
 def held_out_set(config: TrainingConfig) -> ScenarioSet:
-    """The run's held-out set, from its config: `held_out` full scenarios from `held_out_seed`."""
-    s = config.scenarios
-    return scenarios.held_out_set(config.team.agents, config.world, seed=s.held_out_seed, count=s.held_out)
+    """The run's held-out set, from its config (`train.held_out_set`: its generator version, `held_out` full scenarios from
+    `held_out_seed`)."""
+    return train.held_out_set(config)
 
 
 def _layout_facts(scenario_set: ScenarioSet) -> list[tuple[str, str, float, int]]:

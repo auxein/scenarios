@@ -90,7 +90,7 @@ CONFIGS = Path(__file__).resolve().parents[2] / "configs"
 def test_training_defaults_are_the_design_docs() -> None:
     c = TrainingConfig()
     assert (c.team.agents, c.strategy.population, c.strategy.offspring) == (40, 100, 100)
-    assert (c.scenarios.easy, c.scenarios.full, c.scenarios.held_out) == (4, 12, 64)
+    assert (c.scenarios.easy, c.scenarios.full, c.scenarios.held_out, c.scenarios.generator) == (4, 28, 64, 2)  # M2b's mix
     assert c.max_steps == 900 and c.world == WorldParams() and c.sensing == SensingParams()
     assert (c.fitness.progress, c.fitness.delivery, c.fitness.time, c.fitness.approach, c.fitness.progress_floor) == (
         1.0,
@@ -123,6 +123,7 @@ def test_a_partial_config_overrides_only_what_it_lists() -> None:
     assert c.sensing.reach == 8.0 and c.sensing.rays == default.sensing.rays
     assert c.world.agent == default.world.agent and c.strategy.offspring == 100 and c.team == default.team
     assert config_differences(default, c) == [
+        "scenarios.generator: recorded 2, given 1",  # a file without it means generator 1 (M2b): the one key that does not default
         "sensing.ray_range: recorded None, given 8.0",
         "strategy.population: recorded 100, given 20",
         "world.friction.k: recorded 4, given 3",
@@ -172,7 +173,7 @@ def test_the_effective_config_round_trips_through_toml() -> None:
 def test_config_differences_ignore_the_budget() -> None:
     a = TrainingConfig()
     assert config_differences(a, a.with_generations(900)) == []
-    b = parse_config("[fitness]\ntime = 2.0\n[team]\nagents = 20")
+    b = parse_config("[fitness]\ntime = 2.0\n[team]\nagents = 20\n[scenarios]\ngenerator = 2")
     assert config_differences(a, b) == ["fitness.time: recorded 1.0, given 2.0", "team.agents: recorded 40, given 20"]
 
 
@@ -183,6 +184,7 @@ def test_the_presets_load(preset: str) -> None:
     if preset == "smoke":
         assert (config.run.backend, config.team.agents, config.strategy.population, config.budget.generations) == ("numpy", 10, 10, 3)
     else:
-        assert (config.team.agents, config.strategy.population, config.scenarios.easy + config.scenarios.full) == (40, 100, 16)
+        assert (config.team.agents, config.strategy.population, config.scenarios.easy, config.scenarios.full) == (40, 100, 4, 28)
         assert (config.run.backend, config.run.device, config.max_steps) == ("torch", "mps", 900)
     assert config.budget.generations == {"smoke": 3, "pilot": 25, "full": 400}[preset]
+    assert config.scenarios.generator == 2, "every preset uses generator 2 (M2b)"

@@ -57,6 +57,7 @@ __all__ = [
     "default_showcase",
     "outcome",
     "estimate_generation_seconds",
+    "held_out_set",
     "progress_rows",
     "recorded_backend",
     "replay_backend",
@@ -155,8 +156,19 @@ class Training:
 
 def training_set(config: TrainingConfig) -> ScenarioSet:
     s = config.scenarios
-    mix = tuple((d, count) for d, count in ((scenarios.EASY, s.easy), (scenarios.FULL, s.full)) if count > 0)
+    easy, full = scenarios.difficulties(s.generator)
+    mix = tuple((d, count) for d, count in ((easy, s.easy), (full, s.full)) if count > 0)
     return scenarios.training_set(config.team.agents, config.world, seed=s.seed, mix=mix)
+
+
+def held_out_set(config: TrainingConfig, count: int | None = None) -> ScenarioSet:
+    """The run's held-out set (design doc §4.3): `scenarios.held_out` full scenarios from `held_out_seed`, made by the run's
+    generator version. `count` builds only the first ones (each layout has its own stream, so they are the whole set's first)."""
+    s = config.scenarios
+    _, full = scenarios.difficulties(s.generator)
+    return scenarios.held_out_set(
+        config.team.agents, config.world, seed=s.held_out_seed, count=s.held_out if count is None else count, difficulty=full
+    )
 
 
 def build(config: TrainingConfig, backend: Backend) -> Training:
@@ -299,6 +311,14 @@ def _summary(result: auxein.RunResult[Any], run_dir: Path) -> list[str]:
     ]
 
 
+def _generator_note(config: TrainingConfig) -> str:
+    generator = config.scenarios.generator
+    if generator == 1:
+        return "generator 1 (before M2b: a box may start where agents cannot get behind it)"
+    _, full = scenarios.difficulties(generator)
+    return f"generator {generator} (the box starts {full.box_clearance:g} unit clear of walls and obstacles)"
+
+
 def train(
     config: TrainingConfig,
     run_dir: str | Path | None = None,
@@ -321,8 +341,14 @@ def train(
         f"{len(training.training_set)} training scenarios ({c.scenarios.easy} easy, {c.scenarios.full} full), {c.max_steps} steps, "
         f"{c.budget.generations} generations"
     )
-    expected = f", about {estimate_generation_seconds(training):.0f} s of simulation per generation" if estimate else ""
+    expected = ""
+    if estimate:
+        seconds = estimate_generation_seconds(training)
+        # the pilot measured a generation at about a quarter more than its simulation (§10.7)
+        hours = seconds * 1.25 * c.budget.generations / 3600.0
+        expected = f", about {seconds:.0f} s of simulation per generation (about {hours:.1f} h for the run)"
     out(f"training {c.name}: {backend.name} {backend.device} {backend.precision}; {sizes}{expected}")
+    out(f"scenarios: {_generator_note(c)}")
     path.mkdir(parents=True, exist_ok=True)
     (path / "config.toml").write_text(dump_config(config))
     out(f"run directory {path} (Ctrl-C stops it resumably: uv run box-pushing train --resume {path})")
@@ -450,7 +476,7 @@ def showcase_scenarios(config: TrainingConfig, chosen: Sequence[Showcase]) -> li
         if max(held) >= config.scenarios.held_out:
             raise ValueError(f"the held-out set has {config.scenarios.held_out} scenarios, not {max(held) + 1}")
         # each layout comes from its own stream (by index), so the first k of the set are the first k of the whole set
-        held_set = scenarios.held_out_set(config.team.agents, config.world, seed=config.scenarios.held_out_seed, count=max(held) + 1)
+        held_set = held_out_set(config, count=max(held) + 1)
     out: list[Scenario] = []
     for c in chosen:
         source = train_set if c.set == "train" else held_set
