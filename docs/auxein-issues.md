@@ -18,6 +18,26 @@ Each entry has this format:
 
 ---
 
+## 2026-10-18: a held-out report can be written only into the run's directory
+
+- **Kind:** feature request
+- **Symptom:** M3's held-out report keeps everything it writes out of the recording (`DIR/report/`, beside Auxein's
+  `DIR/recording/`), so that a report never changes a run and can be deleted and rebuilt. `evaluate_held_out(write=True)`
+  writes `held_out.json` into the run directory it is given, which here is the recording itself; `write` is a flag, not a
+  path. The scenario passes `write=False` and writes `HeldOutReport.to_json()` itself, which works, but the file is then the
+  scenario's copy of Auxein's format rather than Auxein's own output.
+- **Minimal reproduction** (in a clone of Auxein, any recorded run):
+
+  ```python
+  report = evaluate_held_out(run_dir, evaluator, held_out, candidates=[3, 7], write=True)
+  report.path  # run_dir / "held_out.json": inside the recording; there is no way to say where else
+  ```
+
+- **Auxein branch / PR:** none (a feature request: the owner decides). Suggested: `write` also accepting a path (a file or a
+  directory), as `generation_history_csv(path)` does.
+- **Status:** open.
+- **Workaround:** none needed (`write=False`, and the scenario writes the JSON under `DIR/report/`).
+
 ## 2026-10-16: one Ctrl-C does not stop a batched run
 
 - **Kind:** bug
