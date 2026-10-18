@@ -344,8 +344,9 @@ def train(
     expected = ""
     if estimate:
         seconds = estimate_generation_seconds(training)
-        # the pilot measured a generation at about a quarter more than its simulation (§10.7)
-        hours = seconds * 1.25 * c.budget.generations / 3600.0
+        # a generation is its simulation plus recording, aggregation and breeding: the pilots measured 1.26 (M2a, 16 scenarios)
+        # and 1.4 (M2b, 32) times the simulation (§10.7, §10.9)
+        hours = seconds * 1.4 * c.budget.generations / 3600.0
         expected = f", about {seconds:.0f} s of simulation per generation (about {hours:.1f} h for the run)"
     out(f"training {c.name}: {backend.name} {backend.device} {backend.precision}; {sizes}{expected}")
     out(f"scenarios: {_generator_note(c)}")

@@ -1,5 +1,5 @@
-# The overnight run: the full sizes for 400 generations (about 6.5 hours on the M4's GPU at about a minute per generation,
-# twice M2a's 16 scenarios), with a checkpoint every 10 generations; a recording of about 1 GB.
+# The overnight run: the full sizes for 400 generations (about 6.2 hours on the M4's GPU at 56 s per generation, twice
+# M2a's 16 scenarios), with a checkpoint every 10 generations; a recording of about 0.7 GB.
 #   uv run --extra torch box-pushing train configs/full.toml
 #   uv run --extra torch box-pushing train --resume runs/full-<timestamp>                    # after an interruption
 #   uv run --extra torch box-pushing train --resume runs/full-<timestamp> --generations 600  # to extend it
