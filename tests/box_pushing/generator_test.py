@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from auxein.recording.reader import open_run
 
 from auxein_scenarios.box_pushing import report, scenarios, train
 from auxein_scenarios.box_pushing.config import WorldParams, load_config, parse_config
@@ -84,20 +85,44 @@ def test_the_target_and_the_spawns_are_unchanged_in_distribution() -> None:
 # --- generator 1 is the generator before M2b ---
 
 
+PINS = json.loads((DATA / "v1_fingerprints.json").read_text())
+
+
+def rounded(value: object) -> object:
+    """Floats to 9 decimals, recursively: the layouts use `math.cos` and `math.sin`, whose last bit depends on the platform's
+    libm, so the pins taken on macOS compare on any platform only once rounded (the exact fingerprints match on macOS)."""
+    if isinstance(value, float):
+        return round(value, 9) + 0.0
+    if isinstance(value, list | tuple):
+        return [rounded(v) for v in value]  # type: ignore[union-attr]
+    if isinstance(value, dict):
+        return {k: rounded(v) for k, v in value.items()}  # type: ignore[union-attr]
+    return value
+
+
 def params_sha(scenario_set: object) -> str:
-    return hashlib.sha256(json.dumps([dict(s.params) for s in scenario_set], sort_keys=True).encode()).hexdigest()  # type: ignore[attr-defined]
+    params = [rounded(dict(s.params)) for s in scenario_set]  # type: ignore[attr-defined]
+    return hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()
+
+
+def same_platform_sets(config: object) -> bool:
+    """Whether this platform rebuilds the smoke preset's sets bit for bit as pinned (true on macOS arm64, where they were)."""
+    pinned = PINS["smoke"]
+    return (train.training_set(config).fingerprint, train.held_out_set(config).fingerprint) == (  # type: ignore[arg-type]
+        pinned["training"],
+        pinned["held_out"],
+    )
 
 
 @pytest.mark.parametrize("preset", ["smoke", "full"])
 def test_a_config_without_generator_rebuilds_the_sets_from_before_m2b(preset: str) -> None:
-    """Configs from before M2b (the presets as they were, kept in `data/`) mean generator 1, and rebuild the exact training
-    and held-out sets they did: the fingerprints and params pinned from `main` before M2b."""
-    pinned = json.loads((DATA / "v1_fingerprints.json").read_text())[preset]
+    """Configs from before M2b (the presets as they were, kept in `data/`) mean generator 1, and rebuild the training and
+    held-out sets they did: the ids, seeds and params pinned from `main` before M2b (floats to 9 decimals, `rounded`)."""
+    pinned = PINS[preset]
     config = load_config(DATA / f"v1_{preset}.toml")
     assert config.scenarios.generator == 1
     training, held = train.training_set(config), train.held_out_set(config)
-    assert (training.fingerprint, held.fingerprint) == (pinned["training"], pinned["held_out"])
-    assert (params_sha(training), params_sha(held)) == (pinned["training_params_sha"], pinned["held_params_sha"])
+    assert (params_sha(training), params_sha(held)) == (pinned["training_params_rounded_sha"], pinned["held_params_rounded_sha"])
     assert "difficulty" in training[0].params and "box_clearance" not in training[0].params
 
 
@@ -131,9 +156,15 @@ def same_rows(a: list[dict[str, str]], b: list[dict[str, str]]) -> bool:
 def test_a_run_recorded_before_m2b_reports_and_resumes(tmp_path: Path) -> None:
     """A smoke run recorded on `main` before M2b (`data/pre_m2b_smoke`, 2 generations, its config without `generator`): its
     report gives the CSV it gave then, and it resumes (Auxein compares the evaluator, whose scenario set's fingerprint is the
-    generator's), its config then naming generator 1."""
+    generator's), its config then naming generator 1.
+
+    A recording reproduces only where its scenarios do bit for bit: elsewhere a float's last bit differs (`rounded`), the
+    fingerprint with it, and Auxein rightly refuses to resume. So this runs where the fixture was recorded (macOS arm64); the
+    test below checks the same on any platform with a run recorded here."""
     run = tmp_path / "pre_m2b"
     shutil.copytree(DATA / "pre_m2b_smoke", run)
+    if not same_platform_sets(load_config(run / train.CONFIG_FILE)):
+        pytest.skip("this platform's libm rebuilds the fixture's layouts with other last bits (recorded on macOS arm64)")
     before = rows(run / report.REPORT / report.SUMMARY_FILE)
     episodes = rows(run / report.REPORT / report.EPISODES_FILE)
     assert "generator" not in (run / train.CONFIG_FILE).read_text()
@@ -143,6 +174,18 @@ def test_a_run_recorded_before_m2b_reports_and_resumes(tmp_path: Path) -> None:
     result, _ = train.resume(run, generations=3, out=lambda _: None, progress=False)
     assert result.evaluations_used == 4 + 2 * 4
     assert load_config(run / train.CONFIG_FILE).scenarios.generator == 1, "the rewritten config says generator 1"
+
+
+def test_a_run_without_generator_resumes_as_generator_1(tmp_path: Path) -> None:
+    """On any platform: a run whose config has no `generator` (the pre-M2b smoke preset) records, resumes, and keeps
+    generator 1 in its rewritten config."""
+    run = tmp_path / "legacy"
+    train.train(load_config(DATA / "v1_smoke.toml").with_generations(1), run, out=lambda _: None, progress=False, estimate=False)
+    assert load_config(run / train.CONFIG_FILE).scenarios.generator == 1
+    train.resume(run, generations=2, out=lambda _: None, progress=False)
+    with open_run(run / train.RECORDING) as reader:
+        assert reader.generations() == 2
+    assert load_config(run / train.CONFIG_FILE).scenarios.generator == 1
 
 
 def test_a_new_run_writes_generator_2(tmp_path: Path) -> None:
