@@ -36,3 +36,18 @@ def backend(request: pytest.FixtureRequest) -> Backend:
 def corner_backend(request: pytest.FixtureRequest) -> Backend:
     name, precision = request.param
     return Backend(name, "cpu", precision)
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """On GitHub Actions, each failure is also printed as an `::error` workflow command, which GitHub shows as an annotation on
+    the run and the pull request, readable without opening the log."""
+    import os
+    import sys
+
+    if os.environ.get("GITHUB_ACTIONS") != "true" or not report.failed:
+        return
+    text = str(report.longrepr).splitlines()
+    lines = [line for line in text if line.startswith("E ")][:12] or text[-12:]
+    message = "%0A".join(line.replace("%", "%25").replace("\r", "") for line in lines)
+    sys.__stdout__.write(f"\n::error title={report.nodeid} ({report.when})::{message}\n")  # past pytest's capture
+    sys.__stdout__.flush()
