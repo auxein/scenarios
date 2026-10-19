@@ -1,19 +1,27 @@
-"""Training (design doc §6): a run built from its `TrainingConfig`, run, resumed and watched through Auxein.
+"""Training: a run built from its `TrainingConfig`, run and resumed through Auxein, ending with its brains, its held-out results
+and its charts. No video: videos come from `deploy`.
 
-- **`train(config)`** builds everything from the config (the scenario sets, the world, the brain, the aggregator, the
-  `EpisodeEvaluator` and the `GeneticAlgorithm`) and runs Auxein with recording on, in deterministic mode, generation delivery
-  and a checkpoint every `run.checkpoint_every` generations. The run directory (`runs/<name>-<timestamp>` by default) holds
-  the effective config (`config.toml`, every default filled in), `progress.csv` (rewritten from the recording after every
-  generation, so the run can be charted while it goes on), `clips/` (from `watch`) and **`recording/`, Auxein's run directory**
-  (its event log, metadata and checkpoints; open it with `auxein.open_run`). Auxein's directory is a subdirectory of its own
-  because Auxein starts a run only in an empty or new directory, and so that the two never mix.
-- **`resume(run_dir)`** continues it from its recording and its `config.toml`: after an interruption (Ctrl-C leaves a run
-  resumable: Auxein checkpoints between generations), or with a larger budget (`generations`). **Only the budget may change**,
-  as Auxein allows; a config given to compare with is refused if anything else differs, fitness weights included.
-- **`watch(run_dir)`** renders the best brain so far on a few showcase scenarios, with the run's backend, precision and device
-  (design doc §7), through the environment's step loop. It reads the recording read-only, so it can run while training goes on.
+**`train(config)`** builds everything from the config (the scenario sets, the world, the brain, the aggregator, the
+`EpisodeEvaluator` and the `GeneticAlgorithm`) and runs Auxein with recording on, in deterministic mode, with generation
+delivery and a checkpoint every `CHECKPOINT_EVERY` generations. The run directory (`runs/<name>-<timestamp>` by default) holds:
 
-The run stops on its budget only: no held-out evaluation or early stop during the run (design doc §6, §10.5).
+- `config.toml`: the effective config, every default filled in, so it defines the run on its own;
+- `recording/`: **Auxein's run directory** (its event log, metadata and checkpoints; open it with `auxein.open_run`), a
+  directory of its own because Auxein starts a run only in an empty or new directory;
+- `progress.csv`: per generation, the scores and descriptors, rewritten from the recording after every generation;
+- `brains/`: `gen-<k>.safetensors` for every snapshot (`snapshots.py`), written when the generation is reached, and
+  `final.safetensors`, the run's best, written at the end, and also on interruption so that a stopped run has a usable brain;
+- `held_out.csv`: the snapshot brains judged on the run's held-out set (Auxein's `evaluate_held_out`, which writes nothing
+  into the recording), with their training results and the generalisation gap: what the generalisation chart plots;
+- `charts/`: fitness, delivery, cooperation and generalisation (`charts.py`).
+
+**`resume(run_dir)`** continues a run from its recording and its `config.toml`: after an interruption (Ctrl-C stops a run
+between generations, resumably), or with another number of generations (`generations`, which must not be fewer than it already
+has). Nothing else may change; Auxein itself refuses a resume whose evaluator differs, so even an edited `config.toml` cannot
+silently change a run. A resumed run refreshes its brains, `held_out.csv` and charts at the end.
+
+The run stops on its number of generations only: brains are judged on held-out scenarios after training, never during it, so
+nothing outside the training set influences evolution.
 """
 
 import csv
@@ -24,49 +32,48 @@ import math
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
 import auxein
 import numpy as np
-import numpy.typing as npt
 from auxein.backend import Backend
 from auxein.callbacks import print_progress
+from auxein.core import Status
+from auxein.driver.held_out import evaluate_held_out
 from auxein.driver.progress import Callback, Progress
-from auxein.environments import MLPPolicy, Scenario, ScenarioSet
+from auxein.environments import MLPPolicy, ScenarioSet
 from auxein.random import RandomStream
-from auxein.recording.reader import RecordedEvaluation, open_run
+from auxein.recording.reader import RecordedEvaluation, RunReader, open_run
 from auxein.strategies.ga import GeneticAlgorithm, SelfAdaptiveMutation, TournamentSelection
 
-from auxein_scenarios.box_pushing import fitness, scenarios
-from auxein_scenarios.box_pushing.config import ConfigError, TrainingConfig, config_differences, dump_config, load_config
+from auxein_scenarios.box_pushing import evaluation, fitness, scenarios
+from auxein_scenarios.box_pushing.brain import save_brain
+from auxein_scenarios.box_pushing.charts import draw_charts
+from auxein_scenarios.box_pushing.config import ConfigError, TrainingConfig, dump_config, load_config
 from auxein_scenarios.box_pushing.environment import BoxPushingWorld, brain
+from auxein_scenarios.box_pushing.snapshots import default_generations, find_snapshots, is_snapshot, select
+from auxein_scenarios.common.runs import timestamped
 
 __all__ = [
+    "BRAINS",
+    "CHECKPOINT_EVERY",
     "CONFIG_FILE",
+    "FINAL",
+    "HELD_OUT_FILE",
     "PROGRESS_FILE",
     "RECORDING",
     "RUNS",
     "ProgressCsv",
-    "Replay",
-    "Showcase",
     "Training",
     "TrainingError",
     "build",
-    "default_showcase",
-    "outcome",
     "estimate_generation_seconds",
     "held_out_set",
-    "progress_rows",
-    "recorded_backend",
-    "replay_backend",
-    "replay",
     "resolve_backend",
     "resume",
-    "showcase_scenarios",
     "train",
-    "watch",
+    "training_set",
 ]
 
 RUNS = Path("runs")
@@ -74,8 +81,23 @@ RUNS = Path("runs")
 
 CONFIG_FILE = "config.toml"
 PROGRESS_FILE = "progress.csv"
+HELD_OUT_FILE = "held_out.csv"
 RECORDING = "recording"
 """Auxein's run directory, inside the run's."""
+BRAINS = "brains"
+FINAL = "final.safetensors"
+
+CHECKPOINT_EVERY = 10
+"""Generations between checkpoints: an interrupted run loses at most this many generations' work when it resumes (Auxein
+replays from the last checkpoint), and a checkpoint costs little next to a generation."""
+TOURNAMENT_SIZE = 2
+"""The GA's tournament size: the mildest selection pressure, which keeps the population diverse."""
+CROSSOVER_PROBABILITY = 1.0
+"""Every child is an intermediate recombination of two parents, then mutated."""
+INITIAL_STEP = 0.1
+"""The self-adaptive mutation's starting step, relative to the genome space's width."""
+GENERATION_OVERHEAD = 1.4
+"""A generation's wall time over its simulation's: recording, aggregation and breeding, measured on full-size runs."""
 
 Print = Callable[[str], None]
 
@@ -104,11 +126,23 @@ def resolve_backend(config: TrainingConfig) -> tuple[Backend, str | None]:
     kind = run.device.split(":")[0]
     if not available.get(kind, False):
         note = (
-            f"{run.device} is not available here: training with torch on the CPU instead, several times slower "
-            "(design doc §10.3); the run records the backend it used, and resuming or watching it uses the same"
+            f"{run.device} is not available here: training with torch on the CPU instead, several times slower; the run records "
+            "the backend it used, and resuming it uses the same"
         )
         return Backend("torch", "cpu", precision), note
     return Backend("torch", run.device, precision), None
+
+
+def training_set(config: TrainingConfig) -> ScenarioSet:
+    s = config.scenarios
+    mix = tuple((d, count) for d, count in ((scenarios.EASY, s.easy), (scenarios.FULL, s.full)) if count > 0)
+    return scenarios.training_set(config.team.agents, config.world, seed=s.seed, mix=mix)
+
+
+def held_out_set(config: TrainingConfig) -> ScenarioSet:
+    """The run's held-out set: `scenarios.held_out` full scenarios from `scenarios.held_out_seed`."""
+    s = config.scenarios
+    return scenarios.held_out_set(config.team.agents, config.world, seed=s.held_out_seed, count=s.held_out)
 
 
 @dataclass(frozen=True)
@@ -123,13 +157,13 @@ class Training:
     evaluator: auxein.EpisodeEvaluator[Any]
 
     def strategy(self) -> GeneticAlgorithm:
-        s = self.config.strategy
+        population = self.config.evolution.population
         return GeneticAlgorithm(
-            population_size=s.population,
-            offspring_size=s.offspring,
-            selection=TournamentSelection(s.tournament_size),
-            mutation=SelfAdaptiveMutation(initial_step=s.initial_step),
-            crossover_probability=s.crossover_probability,
+            population_size=population,
+            offspring_size=population,
+            selection=TournamentSelection(TOURNAMENT_SIZE),
+            mutation=SelfAdaptiveMutation(initial_step=INITIAL_STEP),
+            crossover_probability=CROSSOVER_PROBABILITY,
         )
 
     def arguments(self, run_dir: Path, callbacks: Sequence[Callback]) -> dict[str, Any]:
@@ -138,64 +172,45 @@ class Training:
         return {
             "strategy": self.strategy(),
             "evaluator": self.evaluator,
-            "space": self.policy.space(c.brain.scale),
+            "space": self.policy.space(),
             "objectives": [fitness.OBJECTIVE],
             "descriptors": list(fitness.DESCRIPTORS),
             "budget": auxein.Budget(evaluations=c.evaluations),
             "seed": c.run.seed,
             "backend": self.backend,
-            "batch_size": c.strategy.offspring,
+            "batch_size": c.evolution.population,
             "delivery": "generation",
             "deterministic": True,
-            "checkpoint_every_evaluations": c.run.checkpoint_every * c.strategy.offspring,
+            "checkpoint_every_evaluations": CHECKPOINT_EVERY * c.evolution.population,
             "run_dir": run_dir,
             "name": c.name,
             "callbacks": list(callbacks),
         }
 
 
-def training_set(config: TrainingConfig) -> ScenarioSet:
-    s = config.scenarios
-    easy, full = scenarios.difficulties(s.generator)
-    mix = tuple((d, count) for d, count in ((easy, s.easy), (full, s.full)) if count > 0)
-    return scenarios.training_set(config.team.agents, config.world, seed=s.seed, mix=mix)
-
-
-def held_out_set(config: TrainingConfig, count: int | None = None) -> ScenarioSet:
-    """The run's held-out set (design doc §4.3): `scenarios.held_out` full scenarios from `held_out_seed`, made by the run's
-    generator version. `count` builds only the first ones (each layout has its own stream, so they are the whole set's first)."""
-    s = config.scenarios
-    _, full = scenarios.difficulties(s.generator)
-    return scenarios.held_out_set(
-        config.team.agents, config.world, seed=s.held_out_seed, count=s.held_out if count is None else count, difficulty=full
-    )
-
-
 def build(config: TrainingConfig, backend: Backend) -> Training:
-    """The run's components (design doc §6): the training set, the world, the brain, the aggregator and the evaluator."""
+    """The run's components: the training set, the world, the brain, the aggregator and the evaluator."""
     world = BoxPushingWorld(config.world, config.sensing)
     policy = brain(config.sensing, config.brain.hidden)
     train_set = training_set(config)
-    evaluator = auxein.EpisodeEvaluator(policy, world, train_set, fitness.aggregator(config.fitness, config.max_steps))
+    evaluator = auxein.EpisodeEvaluator(policy, world, train_set, fitness.aggregator(config.fitness.weights, config.max_steps))
     return Training(config, backend, world, policy, train_set, evaluator)
 
 
 def estimate_generation_seconds(training: Training, steps: int = 2) -> float:
-    """Seconds per generation, measured: random brains of the run's population size on the training set for `steps` steps
-    (after one to warm up), times the step limit: the simulation alone. A generation also records, aggregates and breeds,
-    which the pilot run measured at about a quarter more (23 s estimated, 29 s per generation on Metal), and costs less once
-    teams deliver early."""
+    """Seconds of simulation per generation, measured: random brains of the run's population size on the training set for
+    `steps` steps (after one to warm up), times the step limit. A generation also records, aggregates and breeds
+    (`GENERATION_OVERHEAD`), and costs less once teams deliver early."""
     c, backend = training.config, training.backend
+    n = c.evolution.population
     world = BoxPushingWorld(c.world, c.sensing, steps=1)
     layout = world.layout(tuple(training.training_set), backend)
-    genomes = training.policy.space(c.brain.scale).sample_genomes(
-        c.strategy.offspring, RandomStream(np.random.SeedSequence(0), backend), backend
-    )
+    genomes = training.policy.space().sample_genomes(n, RandomStream(np.random.SeedSequence(0), backend), backend)
     agents = training.policy.decode_batch(genomes)
-    world.run(agents.act_batch, layout, c.strategy.offspring)
+    world.run(agents.act_batch, layout, n)
     timed = BoxPushingWorld(c.world, c.sensing, steps=steps)
     start = time.perf_counter()
-    timed.run(agents.act_batch, layout, c.strategy.offspring, stop_when_done=False)
+    timed.run(agents.act_batch, layout, n, stop_when_done=False)
     return (time.perf_counter() - start) / steps * c.max_steps
 
 
@@ -206,11 +221,26 @@ def _mean(values: Sequence[float]) -> float:
     return float(np.mean(values)) if values else math.nan
 
 
+def _csv(rows: Sequence[dict[str, object]]) -> str:
+    buffer = io.StringIO()
+    if rows:
+        writer = csv.DictWriter(buffer, fieldnames=list(rows[0]), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    return buffer.getvalue()
+
+
+def _write(path: Path, text: str) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(text)
+    temporary.replace(path)  # atomic: a reader never sees half a file
+
+
 class ProgressCsv:
     """A progress callback that rewrites `progress.csv` from the recording after every generation: Auxein's
     `generation_history()` (generation, evaluations, the best score so far, and the generation's score best, mean, median and
     worst), plus the means of the descriptors over the generation's successful candidates (success rate, progress, approach,
-    `max_pushers`) and the champion's descriptors, and the active seconds where this session saw the generation.
+    `max_pushers`) and the best-so-far's descriptors, and the active seconds where this session saw the generation.
 
     Rebuilt from the recording rather than from the callbacks alone, so that a resumed run's file covers the whole run (a
     resume replays only from its last checkpoint) and holds the descriptors, which `Progress` does not carry."""
@@ -228,18 +258,8 @@ class ProgressCsv:
             self._elapsed[progress.generation] = progress.elapsed
         self.write()
 
-    def write(self) -> str:
-        out = self.rows()
-        buffer = io.StringIO()
-        if out:
-            writer = csv.DictWriter(buffer, fieldnames=list(out[0]), lineterminator="\n")
-            writer.writeheader()
-            writer.writerows(out)
-        text = buffer.getvalue()
-        temporary = self.path.with_suffix(".csv.tmp")
-        temporary.write_text(text)
-        temporary.replace(self.path)  # atomic: a reader never sees half a file
-        return text
+    def write(self) -> None:
+        _write(self.path, _csv(self.rows()))
 
     def rows(self) -> list[dict[str, object]]:
         """The file's rows, from the recording (`elapsed` only for the generations this session saw)."""
@@ -249,30 +269,14 @@ class ProgressCsv:
                 generation = int(cast("int", row["generation"]))
                 if generation not in self._extra:
                     self._extra[generation] = _descriptor_columns(reader.evaluations_in(generation), reader.best_up_to(generation))
-        out: list[dict[str, object]] = []
-        for row in rows:
-            generation = int(cast("int", row["generation"]))
-            out.append({**row, **self._extra[generation], "elapsed": self._elapsed.get(generation, math.nan)})
-        return out
-
-
-def progress_rows(run_dir: str | Path) -> list[dict[str, float]]:
-    """The run's per-generation rows as numbers: from its `progress.csv`, or rebuilt from the recording if the file is
-    missing (without writing it, so the active times it holds are never lost)."""
-    path = Path(run_dir) / PROGRESS_FILE
-    if path.exists():
-        with open(path) as file:
-            raw: list[dict[str, object]] = [dict(row) for row in csv.DictReader(file)]
-    else:
-        raw = ProgressCsv(Path(run_dir)).rows()
-
-    def number(value: object) -> float:
-        try:
-            return float(cast("float", value)) if value not in ("", None) else math.nan
-        except (TypeError, ValueError):
-            return math.nan
-
-    return [{key: number(value) for key, value in row.items()} for row in raw]
+        return [
+            {
+                **row,
+                **self._extra[int(cast("int", row["generation"]))],
+                "elapsed": self._elapsed.get(int(cast("int", row["generation"])), math.nan),
+            }
+            for row in rows
+        ]
 
 
 def _descriptor_columns(evaluations: Sequence[RecordedEvaluation], champion: RecordedEvaluation | None) -> dict[str, object]:
@@ -285,38 +289,151 @@ def _descriptor_columns(evaluations: Sequence[RecordedEvaluation], champion: Rec
     return columns
 
 
+# --- brains/ ---
+
+
+def _save(run_dir: Path, config: TrainingConfig, champion: RecordedEvaluation, generation: int, name: str, final: bool = False) -> Path:
+    return save_brain(
+        run_dir / BRAINS / name, champion.genome, config, run_dir=run_dir, generation=generation,
+        candidate_id=int(champion.candidate_id), score=float(champion.objectives["score"]),
+        success=float(champion.descriptors["success_rate"]), final=final,
+    )  # fmt: skip
+
+
+class BrainWriter:
+    """A progress callback that saves the brain of each snapshot when its generation is reached: `brains/gen-<k>.safetensors`
+    for `k` on the log-spaced schedule, unless its champion is the previous snapshot's (`snapshots.select`). The decision
+    reads only the recording, so a resumed run makes the same files as an uninterrupted one."""
+
+    def __init__(self, run_dir: Path, config: TrainingConfig) -> None:
+        self.run_dir, self.config = run_dir, config
+
+    def __call__(self, progress: Progress[Any]) -> None:
+        k = progress.generation
+        if progress.replaying or progress.final or not k or not is_snapshot(k):
+            return
+        with open_run(self.run_dir / RECORDING) as reader:
+            chosen = [g for g in default_generations(k) if is_snapshot(g)]
+            snapshots = select(chosen, [reader.best_up_to(g) for g in chosen])
+        if snapshots and snapshots[-1].generation == k:
+            _save(self.run_dir, self.config, snapshots[-1].champion, k, f"gen-{k:04d}.safetensors")
+
+
+def _save_final(run_dir: Path, config: TrainingConfig) -> Path | None:
+    """`brains/final.safetensors`: the run's best so far, or nothing if no generation has been told yet."""
+    with open_run(run_dir / RECORDING) as reader:
+        told = reader.generations()
+        best = reader.best_up_to(told) if told else None
+    if best is None:
+        return None
+    return _save(run_dir, config, best, told, FINAL, final=True)
+
+
+# --- held_out.csv ---
+
+
+def _number(value: float, digits: int = 6) -> str:
+    return "" if math.isnan(value) else f"{value:.{digits}f}"
+
+
+def held_out_rows(run_dir: Path, config: TrainingConfig, backend: Backend) -> list[dict[str, object]]:
+    """Every snapshot brain (the log-spaced ones and the last generation's) judged on the run's held-out set, through
+    Auxein's `evaluate_held_out` with an evaluator rebuilt from the config (the same world, brain and aggregator, another
+    scenario set), with its training results from the recording: one row per snapshot."""
+    recording = run_dir / RECORDING
+    training, held = training_set(config), held_out_set(config)
+    scenarios.check_disjoint(training, held)
+    snapshots = find_snapshots(recording)
+    world = BoxPushingWorld(config.world, config.sensing)
+    evaluator = auxein.EpisodeEvaluator(
+        brain(config.sensing, config.brain.hidden), world, held, fitness.aggregator(config.fitness.weights, config.max_steps)
+    )
+    judged = evaluate_held_out(recording, evaluator, held, candidates=[m.candidate_id for m in snapshots], backend=backend, write=False)
+    by_id = {c.candidate_id: c for c in judged.candidates}
+    score = evaluation.scorer(config.fitness, config.max_steps)
+    rows: list[dict[str, object]] = []
+    with open_run(recording) as reader:
+        for m in snapshots:
+            recorded = [dict(e.measurements) if e.status is Status.OK else None for e in reader.episodes(m.candidate_id)]
+            on_held = [dict(s.measurements) if s.status is Status.OK else None for s in by_id[m.candidate_id].scenarios]
+            train_episodes = evaluation.episodes(list(training), recorded, score)
+            t = evaluation.summarise(train_episodes)
+            easy = evaluation.summarise([e for e in train_episodes if e.difficulty == "easy"])
+            full = evaluation.summarise([e for e in train_episodes if e.difficulty == "full"])
+            h = evaluation.summarise(evaluation.episodes(list(held), on_held, score))
+            rows.append(
+                {
+                    "generation": m.generation,
+                    "candidate_id": m.candidate_id,
+                    "train_score": _number(t.score),
+                    "train_success": _number(t.success),
+                    "train_easy_success": _number(easy.success),
+                    "train_full_success": _number(full.success),
+                    "held_episodes": h.episodes - h.failed,
+                    "held_delivered": h.delivered,
+                    "held_success": _number(h.success),
+                    "held_progress": _number(h.progress),
+                    "held_max_pushers": _number(h.max_pushers),
+                    "held_delivery_steps_median": _number(h.delivery_steps, 1),
+                    "gap": _number(full.success - h.success),
+                }
+            )
+    return rows
+
+
 # --- train and resume ---
+
+
+def _uv(config: TrainingConfig) -> str:
+    return "uv run --extra torch" if config.run.backend == "torch" else "uv run"
 
 
 def _new_run_dir(config: TrainingConfig, run_dir: str | Path | None) -> Path:
     if run_dir is None:
-        return RUNS / f"{config.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        return timestamped(RUNS, config.name)
     path = Path(run_dir)
     if (path / RECORDING).exists() or (path / CONFIG_FILE).exists():
-        raise TrainingError(f"{path} already holds a run: resume it with `box-pushing train --resume {path}`, or choose another directory")
+        raise TrainingError(f"{path} already holds a run: resume it with `--resume {path}`, or choose another directory")
     return path
 
 
-def _summary(result: auxein.RunResult[Any], run_dir: Path) -> list[str]:
+def _finish(result: auxein.RunResult[Any], run_dir: Path, config: TrainingConfig, backend: Backend, out: Print) -> None:
+    """After the last generation: the final brain, the held-out results, the charts, and lines saying where they are."""
     best = result.best
     if best is None:
-        return [f"no candidate succeeded; the run is in {run_dir}"]
+        out(f"no candidate succeeded; the run is in {run_dir}")
+        return
     d = best.descriptors
-    return [
+    out(
         f"best score {best.objectives['score']:.4f} (candidate {int(best.candidate.id)}): success rate {d['success_rate']:.0%} on "
-        f"the training set, mean progress {d['progress']:.2f}, mean approach {d['approach']:.2f}, "
-        f"at most {d['max_pushers']:.1f} touching on average",
-        f"{result.evaluations_used:,} evaluations in {result.wall_time / 60:.1f} min ({result.stop_reason}); the run is in {run_dir}",
-        f"watch it: uv run box-pushing watch {run_dir}",
-    ]
+        f"the training set, mean progress {d['progress']:.2f}, at most {d['max_pushers']:.1f} touching on average; "
+        f"{result.evaluations_used:,} evaluations in {result.wall_time / 60:.1f} min ({result.stop_reason})"
+    )
+    final = _save_final(run_dir, config)
+    started = time.perf_counter()
+    rows = held_out_rows(run_dir, config, backend)
+    _write(run_dir / HELD_OUT_FILE, _csv(rows))
+    last = rows[-1]
+    out(
+        f"held-out: the final brain delivers {last['held_delivered']} of {last['held_episodes']} unseen scenarios "
+        f"({float(str(last['held_success'])):.0%}; {time.perf_counter() - started:.0f} s for {len(rows)} snapshot brains)"
+    )
+    draw_charts(run_dir, config, run_dir / PROGRESS_FILE, run_dir / HELD_OUT_FILE, out=lambda _: None)
+    brains = sorted(p.name for p in (run_dir / BRAINS).glob("*.safetensors"))
+    out(f"the run is in {run_dir}: brains/ ({', '.join(brains)}), charts/, {HELD_OUT_FILE}, {PROGRESS_FILE}, recording/")
+    if final is not None:
+        out(f"deploy it: {_uv(config)} scenarios box-pushing deploy {final}")
 
 
-def _generator_note(config: TrainingConfig) -> str:
-    generator = config.scenarios.generator
-    if generator == 1:
-        return "generator 1 (before M2b: a box may start where agents cannot get behind it)"
-    _, full = scenarios.difficulties(generator)
-    return f"generator {generator} (the box starts {full.box_clearance:g} unit clear of walls and obstacles)"
+def _run(training: Training, run_dir: Path, hooks: Sequence[Callback], resuming: bool) -> auxein.RunResult[Any]:
+    """`auxein.run` or `auxein.resume`, saving the final brain if the run is interrupted (or fails) after a generation."""
+    arguments = training.arguments(run_dir / RECORDING, hooks)
+    try:
+        return auxein.resume(**arguments) if resuming else auxein.run(**arguments)
+    except BaseException:
+        if (run_dir / RECORDING / "events.sqlite").exists():
+            _save_final(run_dir, training.config)
+        raise
 
 
 def train(
@@ -329,7 +446,7 @@ def train(
     estimate: bool = True,
 ) -> tuple[auxein.RunResult[Any], Path]:
     """Trains a new run (module docstring); returns its result and its directory. `callbacks` are added to the progress line
-    (`progress`) and `progress.csv`; `estimate` measures the seconds per generation before starting."""
+    (`progress`), `progress.csv` and the brain writer; `estimate` measures the seconds per generation before starting."""
     path = _new_run_dir(config, run_dir)
     backend, note = resolve_backend(config)
     if note:
@@ -337,264 +454,72 @@ def train(
     training = build(config, backend)
     c = config
     sizes = (
-        f"{c.team.agents} agents, population {c.strategy.population} + {c.strategy.offspring} children, "
-        f"{len(training.training_set)} training scenarios ({c.scenarios.easy} easy, {c.scenarios.full} full), {c.max_steps} steps, "
-        f"{c.budget.generations} generations"
+        f"{c.team.agents} agents, population {c.evolution.population}, {len(training.training_set)} training scenarios "
+        f"({c.scenarios.easy} easy, {c.scenarios.full} full), {c.max_steps} steps, {c.evolution.generations} generations"
     )
     expected = ""
     if estimate:
         seconds = estimate_generation_seconds(training)
-        # a generation is its simulation plus recording, aggregation and breeding: the pilots measured 1.26 (M2a, 16 scenarios)
-        # and 1.4 (M2b, 32) times the simulation (§10.7, §10.9)
-        hours = seconds * 1.4 * c.budget.generations / 3600.0
-        expected = f", about {seconds:.0f} s of simulation per generation (about {hours:.1f} h for the run)"
+        run_seconds = seconds * GENERATION_OVERHEAD * c.evolution.generations
+        duration = f"{run_seconds / 3600.0:.1f} h" if run_seconds >= 3600 else f"{max(run_seconds / 60.0, 0.1):.1f} min"
+        # the held-out judging at the end: every snapshot brain on every held-out scenario, in one batch
+        judged = len(default_generations(c.evolution.generations)) * c.scenarios.held_out
+        minutes = seconds * judged / (c.evolution.population * len(training.training_set)) / 60.0
+        expected = (
+            f"; about {seconds:.0f} s of simulation per generation, so about {duration} for the run, then about "
+            f"{max(minutes, 0.1):.1f} min to judge its snapshot brains on {c.scenarios.held_out} held-out scenarios"
+        )
     out(f"training {c.name}: {backend.name} {backend.device} {backend.precision}; {sizes}{expected}")
-    out(f"scenarios: {_generator_note(c)}")
     path.mkdir(parents=True, exist_ok=True)
-    (path / "config.toml").write_text(dump_config(config))
-    out(f"run directory {path} (Ctrl-C stops it resumably: uv run box-pushing train --resume {path})")
-    hooks: list[Callback] = [*([print_progress()] if progress else []), ProgressCsv(path), *callbacks]
-    result = auxein.run(**training.arguments(path / RECORDING, hooks))
-    for line in _summary(result, path):
-        out(line)
+    (path / CONFIG_FILE).write_text(dump_config(config))
+    out(f"run directory {path} (Ctrl-C stops it resumably: {_uv(config)} scenarios box-pushing train --resume {path})")
+    hooks: list[Callback] = [*([print_progress()] if progress else []), ProgressCsv(path), BrainWriter(path, config), *callbacks]
+    result = _run(training, path, hooks, resuming=False)
+    _finish(result, path, config, backend, out)
     return result, path
 
 
 def recorded_backend(run_dir: Path) -> Backend:
-    """The backend a recorded run used (its metadata), to resume or watch it on the same."""
+    """The backend a recorded run used (its metadata), to resume it on the same."""
     with open_run(Path(run_dir) / RECORDING) as reader:
         metadata = reader.metadata
     where = cast("dict[str, str]", metadata["backend"])
     return Backend(cast("Any", where["name"]), where["device"], cast("Any", metadata["precision"]))
 
 
-def replay_backend(run_dir: str | Path) -> tuple[Backend, str | None]:
-    """The backend to replay a recorded run's brains on (clips, the held-out report): the run's own backend, precision and
-    device (design doc §7), or torch on the CPU, with a note saying so, when the run's GPU is not available here."""
-    recorded = recorded_backend(Path(run_dir))
-    if recorded.name != "torch" or recorded.device == "cpu":
-        return recorded, None
-    resolved, note = resolve_backend(load_config(Path(run_dir) / CONFIG_FILE))
-    return Backend("torch", resolved.device, recorded.precision), note
+def _told(run_dir: Path) -> int:
+    reader: RunReader
+    with open_run(run_dir / RECORDING) as reader:
+        return reader.generations()
 
 
 def resume(
     run_dir: str | Path,
     *,
     generations: int | None = None,
-    config: TrainingConfig | None = None,
     callbacks: Sequence[Callback] = (),
     out: Print = print,
     progress: bool = True,
 ) -> tuple[auxein.RunResult[Any], Path]:
-    """Continues a recorded run: after an interruption, or with another budget (`generations`: more to extend it, or fewer to
-    end it sooner, but not fewer than it already has). The run's own `config.toml`
-    defines it; a `config` given to compare with is refused if it differs in anything but the budget (whose own budget then
-    applies, unless `generations` is given). The run's `config.toml` is updated with the new budget once the run has gone on."""
+    """Continues a recorded run (module docstring), with its own `config.toml`, or with `generations` generations in all (more
+    to extend it, or fewer to end it sooner, but not fewer than it already has). The run's `config.toml` is updated with the new
+    number once the run has gone on."""
     path = Path(run_dir)
     if not (path / CONFIG_FILE).exists() or not (path / RECORDING / "events.sqlite").exists():
         raise TrainingError(f"{path} is not a box-pushing run: it needs {CONFIG_FILE} and {RECORDING}/events.sqlite")
     recorded = load_config(path / CONFIG_FILE)
-    if config is not None:
-        differences = config_differences(recorded, config)
-        if differences:
-            listing = "\n".join(f"  - {line}" for line in differences)
-            raise ConfigError(f"cannot resume {path}: only the budget may change when resuming a run, but the config differs:\n{listing}")
-    chosen = config if config is not None else recorded
-    if generations is not None:
-        chosen = chosen.with_generations(generations)
-    with open_run(path / RECORDING) as reader:
-        told = reader.generations()
-    if chosen.budget.generations < told:
-        raise ConfigError(f"cannot resume {path} with {chosen.budget.generations} generations: it already has {told}")
+    chosen = recorded if generations is None else recorded.with_generations(generations)
+    told = _told(path)
+    if chosen.evolution.generations < told:
+        raise ConfigError(f"cannot resume {path} with {chosen.evolution.generations} generations: it already has {told}")
     backend = recorded_backend(path)
     training = build(chosen, backend)
-    out(f"resuming {path}: {backend.name} {backend.device} {backend.precision}, budget {chosen.budget.generations} generations")
-    hooks: list[Callback] = [*([print_progress()] if progress else []), ProgressCsv(path), *callbacks]
-    started = False
-
-    def mark(progress: Progress[Any]) -> None:
-        nonlocal started
-        started = True
-
+    out(f"resuming {path}: {backend.name} {backend.device} {backend.precision}, {chosen.evolution.generations} generations")
+    hooks: list[Callback] = [*([print_progress()] if progress else []), ProgressCsv(path), BrainWriter(path, chosen), *callbacks]
     try:
-        result = auxein.resume(**training.arguments(path / RECORDING, [mark, *hooks]))
-        started = True
+        result = _run(training, path, hooks, resuming=True)
     finally:
-        if started and chosen != recorded:
+        if chosen != recorded and _told(path) > told:
             (path / CONFIG_FILE).write_text(dump_config(chosen))
-    for line in _summary(result, path):
-        out(line)
+    _finish(result, path, chosen, backend, out)
     return result, path
-
-
-# --- watching a run ---
-
-
-@dataclass(frozen=True)
-class Showcase:
-    """A scenario to watch a run on: `set` is `"train"` or `"held"`, `index` its place in that set."""
-
-    set: str
-    index: int
-
-    @staticmethod
-    def parse(text: str) -> "Showcase":
-        name, _, index = text.partition(":")
-        if name not in ("train", "held") or not index.isdigit():
-            raise ValueError(f"a showcase scenario is train:<index> or held:<index>, got {text!r}")
-        return Showcase(name, int(index))
-
-    @property
-    def note(self) -> str:
-        """The panel's honest label (design doc §7): a clip never passes a training scenario off as an unseen one."""
-        return "training scenario" if self.set == "train" else "held-out: never seen in training"
-
-
-def outcome(measurements: dict[str, float]) -> str:
-    """How an episode ended, for a panel's footer: delivered at step k, or the progress made."""
-    d0, d = measurements["initial_distance"], measurements["final_distance"]
-    if measurements["delivered"] > 0.5:
-        return f"delivered at step {int(measurements['steps'])}"
-    return f"not delivered  ·  progress {(d0 - d) / d0 if d0 > 0 else 0.0:+.2f}"
-
-
-def default_showcase(config: TrainingConfig) -> list[Showcase]:
-    """Two training scenarios (the first easy and the first full, if both are in the set) and the first two held-out ones."""
-    s = config.scenarios
-    chosen = [Showcase("train", 0)]
-    if s.easy and s.full:
-        chosen.append(Showcase("train", s.easy))
-    return [*chosen, Showcase("held", 0), Showcase("held", min(1, s.held_out - 1))]
-
-
-def showcase_scenarios(config: TrainingConfig, chosen: Sequence[Showcase]) -> list[Scenario]:
-    """The scenarios of `chosen`, from the run's training and held-out sets (generated from the config)."""
-    train_set = training_set(config)
-    held = [c.index for c in chosen if c.set == "held"]
-    held_set = None
-    if held:
-        if max(held) >= config.scenarios.held_out:
-            raise ValueError(f"the held-out set has {config.scenarios.held_out} scenarios, not {max(held) + 1}")
-        # each layout comes from its own stream (by index), so the first k of the set are the first k of the whole set
-        held_set = held_out_set(config, count=max(held) + 1)
-    out: list[Scenario] = []
-    for c in chosen:
-        source = train_set if c.set == "train" else held_set
-        assert source is not None
-        if c.index >= len(source):
-            raise ValueError(f"the training set has {len(source)} scenarios, not {c.index + 1}")
-        out.append(source[c.index])
-    return out
-
-
-@dataclass(frozen=True)
-class Replay:
-    """Champions of a run replayed on showcase scenarios through the environment's step loop, on the run's backend (design
-    doc §7): what `watch`, the milestone clips and the montage draw. Row `i` of the trajectory and of `measurements` (host
-    arrays, `(n, s)`) is the `i`th genome replayed; column `j` is `scenarios[j]`, chosen as `showcase[j]`."""
-
-    config: TrainingConfig
-    backend: Backend
-    showcase: list[Showcase]
-    scenarios: list[Scenario]
-    trajectory: Any  # world.Trajectory (Any: train.py imports the world lazily, through environment)
-    senses: Any  # environment.SensingTrace | None
-    measurements: dict[str, Any]
-
-    @property
-    def labels(self) -> list[str]:
-        return [f"{s.id} · {s.params['difficulty']}" for s in self.scenarios]
-
-    def episode(self, row: int, column: int) -> dict[str, float]:
-        return {name: float(values[row, column]) for name, values in self.measurements.items()}
-
-    def footers(self, row: int) -> list[tuple[str, str]]:
-        """Each panel's footer for the `row`th genome: its honest label and how its episode ended."""
-        return [(c.note, outcome(self.episode(row, j))) for j, c in enumerate(self.showcase)]
-
-    def records(self, row: int) -> int:
-        """How many records the `row`th genome's clip needs: up to the step its last showcase episode ended (the batch runs
-        on until every genome's episodes have ended, frozen once they have)."""
-        done = np.asarray(self.trajectory.done)[:, row, :].all(axis=1)
-        ended = np.nonzero(done)[0]
-        return int(ended[0]) + 1 if ended.size else int(self.trajectory.records)
-
-
-def replay(
-    run_dir: str | Path, genomes: Sequence[object], showcase: Sequence[Showcase], *, overlay: bool = False, out: Print = print
-) -> Replay:
-    """Replays `genomes` (recorded genomes of the run) on `showcase`, all in one batch, with the sensing overlay of agent 0
-    if `overlay`."""
-    run = Path(run_dir)
-    config = load_config(run / CONFIG_FILE)
-    backend, note = replay_backend(run)
-    if note:
-        out(f"note: {note}; the clip may differ from what was scored (design doc §7)")
-    chosen = list(showcase)
-    selected = showcase_scenarios(config, chosen)
-    world = BoxPushingWorld(config.world, config.sensing)
-    policy = brain(config.sensing, config.brain.hidden)
-    rows: list[npt.NDArray[np.float64]] = [np.asarray(g, dtype=np.float64).reshape(-1) for g in genomes]
-    stacked = backend.asarray(np.asarray(rows, dtype=np.float64))
-    trajectory, senses, rollout = world.watch(policy.decode_batch(stacked), selected, agents=(0,) if overlay else ())
-    measured = {name: np.asarray(backend.to_numpy(v), dtype=np.float64) for name, v in rollout.measurements.items()}
-    return Replay(config, backend, chosen, selected, trajectory, senses, measured)
-
-
-def watch(
-    run_dir: str | Path,
-    *,
-    generation: int | None = None,
-    showcase: Sequence[Showcase] | None = None,
-    overlay: bool = False,
-    path: str | Path | None = None,
-    fps: float = 30.0,
-    speedup: float = 2.0,
-    out: Print = print,
-) -> Path:
-    """Renders the best brain up to `generation` (the last told one by default) on showcase scenarios, with the run's backend,
-    precision and device (design doc §7), through the environment's step loop. Returns the clip's path (by default in the run
-    directory's `clips/`). Reads the recording read-only: safe while the run is training."""
-    from auxein_scenarios.box_pushing.render import render_clip  # matplotlib, only when rendering
-
-    run = Path(run_dir)
-    config = load_config(run / CONFIG_FILE)
-    with open_run(run / RECORDING) as reader:
-        told = reader.generations()
-        if told == 0:
-            raise TrainingError(f"{run} has no generation yet: wait for the first one")
-        k = told if generation is None else generation
-        if not 1 <= k <= told:
-            raise TrainingError(f"{run} has generations 1 to {told}, not {k}")
-        best = reader.best_up_to(k)
-    if best is None:
-        raise TrainingError(f"no candidate of {run} succeeded by generation {k}")
-    played = replay(run, [best.genome], list(showcase) if showcase is not None else default_showcase(config), overlay=overlay, out=out)
-    score = best.objectives["score"]
-    target = Path(path) if path is not None else run / "clips" / f"best-gen{k:04d}{'-overlay' if overlay else ''}.mp4"
-    clip = render_clip(
-        played.trajectory,
-        [dict(s.params) for s in played.scenarios],
-        config.world,
-        target,
-        cells=[(0, i) for i in range(len(played.scenarios))],
-        labels=played.labels,
-        senses=played.senses,
-        sensing=config.sensing,
-        kicker=f"Run · {config.name}",
-        title=f"The best brain after generation {k}",
-        subtitle=f"Candidate {int(best.candidate_id)}, score {score:.3f} on the training set "
-        f"(success rate {best.descriptors['success_rate']:.0%}). Training and held-out scenarios, {config.team.agents} agents.",
-        fps=fps,
-        speedup=speedup,
-        columns=2,
-        footers=played.footers(0),
-    )
-    out(str(clip))
-    for i, label in enumerate(played.labels):
-        m = played.episode(0, i)
-        d0, d = m["initial_distance"], m["final_distance"]
-        state = f"delivered at step {int(m['steps'])}" if m["delivered"] > 0.5 else "not delivered"
-        out(f"  {label}: {state}, progress {(d0 - d) / d0:+.2f}, most touching the box {int(m['max_pushers'])}")
-    return clip

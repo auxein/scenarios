@@ -1,0 +1,12 @@
+{
+  "about": "A smoke run trained with the code before brains and deploy (main at a5b452f), with the config below in the old shape ([strategy] population 10, offspring 10; [budget] generations 4; [run] checkpoint_every 10; scenarios.generator 2, held_out_seed 2). The event log's digest is exact per platform (libm differs in the last bit); the evaluations' digest with every number to 9 significant digits is the same on both.",
+  "config": "name = \"pin\"\n[world.simulation]\nmax_steps = 200\n[team]\nagents = 10\n[scenarios]\neasy = 2\nfull = 2\nheld_out = 4\nseed = 1\n[evolution]\npopulation = 10\ngenerations = 4\n[run]\nbackend = \"numpy\"\ndevice = \"cpu\"\nprecision = \"float64\"\n",
+  "event_log_sha256": {
+    "darwin-arm64": "58ef95a37389f58abf60e26f86959743a8a03c7ad45e2d171b5dc5eaac5c8d59",
+    "linux-x86_64": "b1812b7090b3bcc26e15a8142fe370644198a2cec9fc4f5d98b5f901d52ffaba"
+  },
+  "evaluations_sha256_9_digits": "2293024bf0834d52ffa0ef41bf991a0064ede7ed3c10581a8842a4e61b35ed74",
+  "generations": 4,
+  "final_best_candidate": 38,
+  "final_best_score": 0.0542191767608551
+}
