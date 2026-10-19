@@ -69,6 +69,7 @@ __all__ = [
     "TrainingError",
     "build",
     "estimate_generation_seconds",
+    "estimate_seconds",
     "held_out_set",
     "resolve_backend",
     "resume",
@@ -197,21 +198,28 @@ def build(config: TrainingConfig, backend: Backend) -> Training:
     return Training(config, backend, world, policy, train_set, evaluator)
 
 
-def estimate_generation_seconds(training: Training, steps: int = 2) -> float:
-    """Seconds of simulation per generation, measured: random brains of the run's population size on the training set for
-    `steps` steps (after one to warm up), times the step limit. A generation also records, aggregates and breeds
-    (`GENERATION_OVERHEAD`), and costs less once teams deliver early."""
+def estimate_seconds(training: Training, candidates: int, count: int, steps: int = 2) -> float:
+    """Seconds to simulate `candidates` random brains on `count` scenarios for a whole episode, measured on `steps` steps (after
+    one to warm up) and scaled to the step limit: an upper bound, as delivered scenarios still cost compute. The scenarios are the
+    training set's, repeated to `count`: the cost depends on the batch's shape, not on the layouts. A small batch on a GPU costs
+    about as much per step as a large one, so this is measured, never scaled from another shape."""
     c, backend = training.config, training.backend
-    n = c.evolution.population
+    chosen = [training.training_set[i % len(training.training_set)] for i in range(count)]
     world = BoxPushingWorld(c.world, c.sensing, steps=1)
-    layout = world.layout(tuple(training.training_set), backend)
-    genomes = training.policy.space().sample_genomes(n, RandomStream(np.random.SeedSequence(0), backend), backend)
+    layout = world.layout(chosen, backend)
+    genomes = training.policy.space().sample_genomes(candidates, RandomStream(np.random.SeedSequence(0), backend), backend)
     agents = training.policy.decode_batch(genomes)
-    world.run(agents.act_batch, layout, n)
+    world.run(agents.act_batch, layout, candidates)
     timed = BoxPushingWorld(c.world, c.sensing, steps=steps)
     start = time.perf_counter()
-    timed.run(agents.act_batch, layout, n, stop_when_done=False)
+    timed.run(agents.act_batch, layout, candidates, stop_when_done=False)
     return (time.perf_counter() - start) / steps * c.max_steps
+
+
+def estimate_generation_seconds(training: Training, steps: int = 2) -> float:
+    """Seconds of simulation per generation (`estimate_seconds` for the population on the training set). A generation also
+    records, aggregates and breeds (`GENERATION_OVERHEAD`), and costs less once teams deliver early."""
+    return estimate_seconds(training, training.config.evolution.population, len(training.training_set), steps)
 
 
 # --- progress.csv ---
@@ -463,8 +471,7 @@ def train(
         run_seconds = seconds * GENERATION_OVERHEAD * c.evolution.generations
         duration = f"{run_seconds / 3600.0:.1f} h" if run_seconds >= 3600 else f"{max(run_seconds / 60.0, 0.1):.1f} min"
         # the held-out judging at the end: every snapshot brain on every held-out scenario, in one batch
-        judged = len(default_generations(c.evolution.generations)) * c.scenarios.held_out
-        minutes = seconds * judged / (c.evolution.population * len(training.training_set)) / 60.0
+        minutes = estimate_seconds(training, len(default_generations(c.evolution.generations)), c.scenarios.held_out) / 60.0
         expected = (
             f"; about {seconds:.0f} s of simulation per generation, so about {duration} for the run, then about "
             f"{max(minutes, 0.1):.1f} min to judge its snapshot brains on {c.scenarios.held_out} held-out scenarios"

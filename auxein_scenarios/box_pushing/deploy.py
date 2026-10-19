@@ -35,7 +35,7 @@ import secrets
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 from auxein.backend import Backend
@@ -160,30 +160,40 @@ def deploy(
         f"({chosen.name} {chosen.device} {chosen.precision}), into {target}"
     )
 
+    # brains of the same world, sensing, team and network run together, in one batch; the scenarios depend on the world and team
+    teams = [agents if agents is not None else b.agents for b in brains]
     sets: dict[str, ScenarioSet] = {}
-    deployed: list[Deployed] = []
-    for b in brains:
-        team = agents if agents is not None else b.agents
-        world = BoxPushingWorld(b.world, b.sensing)
-        key = json.dumps([b.world.to_dict(), team], sort_keys=True)
-        if key not in sets:
-            sets[key] = scenarios.held_out_set(
+    batches: dict[str, list[int]] = {}
+    for i, (b, team) in enumerate(zip(brains, teams, strict=True)):
+        place = json.dumps([b.world.to_dict(), team], sort_keys=True)
+        if place not in sets:
+            sets[place] = scenarios.held_out_set(
                 team, b.world, seed=seed, count=count, difficulty=DIFFICULTIES[difficulty], prefix="scenario"
             )
-        chosen_set = sets[key]
-        genome = chosen.asarray(b.genome.reshape(1, -1))
-        (measured,) = evaluation.measure(world, b.policy.decode_batch(genome), list(chosen_set), chosen)
-        episodes = evaluation.episodes(list(chosen_set), measured, _scorer(b, world))
-        deployed.append(Deployed(b.label, "brain", b, world, chosen_set, episodes))
-        r = evaluation.summarise(episodes)
-        out(f"  {b.label}: {r.delivered} of {r.episodes - r.failed} delivered ({r.success:.0%}), progress {r.progress:+.2f}")
+        batches.setdefault(json.dumps([place, b.sensing.range, b.policy.layers]), []).append(i)
+    found: dict[int, Deployed] = {}
+    for members in batches.values():
+        first = brains[members[0]]
+        world = BoxPushingWorld(first.world, first.sensing)
+        chosen_set = sets[json.dumps([first.world.to_dict(), teams[members[0]]], sort_keys=True)]
+        genomes = chosen.asarray(np.asarray([brains[i].genome for i in members], dtype=np.float64))
+        measured = evaluation.measure(world, first.policy.decode_batch(genomes), list(chosen_set), chosen)
+        for i, row in zip(members, measured, strict=True):
+            episodes = evaluation.episodes(list(chosen_set), row, _scorer(brains[i], world))
+            found[i] = Deployed(brains[i].label, "brain", brains[i], world, chosen_set, episodes)
+    deployed = [found[i] for i in range(len(brains))]
+    for d in deployed:
+        r = evaluation.summarise(d.episodes)
+        out(f"  {d.name}: {r.delivered} of {r.episodes - r.failed} delivered ({r.success:.0%}), progress {r.progress:+.2f}")
 
     baselines: list[Deployed] = []
-    groups = {json.dumps([d.brain.world.to_dict(), len(d.scenarios[0].params["agents"])], sort_keys=True): d  # type: ignore[union-attr]
-              for d in deployed}  # fmt: skip
-    for i, first in enumerate(groups.values()):
+    places: dict[str, Deployed] = {}
+    for d in deployed:
+        assert d.brain is not None
+        places.setdefault(json.dumps([d.brain.world.to_dict(), d.brain.sensing.range, len(d.scenarios[0].params["agents"])]), d)  # type: ignore[arg-type]
+    for i, first in enumerate(places.values()):
         assert first.brain is not None
-        suffix = f" (world {i + 1})" if len(groups) > 1 else ""
+        suffix = f" (world {i + 1})" if len(places) > 1 else ""
         score = _scorer(None, first.world)
         for kind, members in evaluation.baselines(first.world, first.brain.policy, list(first.scenarios), chosen, score).items():
             flat = tuple(e for member in members for e in member)
@@ -313,26 +323,31 @@ def _summary(deployment: Deployment) -> str:
 def _video(deployment: Deployment, k: int, backend: Backend) -> Path:
     from auxein_scenarios.box_pushing.render import Panel, render_panels  # matplotlib, only when rendering
 
-    panels: list[Panel] = []
-    for d in deployment.brains:
+    # one recorded run per batch of brains that share a world, sensing, team and network (as `deploy` measured them)
+    batches: dict[str, list[int]] = {}
+    for i, d in enumerate(deployment.brains):
         assert d.brain is not None
-        shown = list(d.scenarios)[:k]
-        genome = backend.asarray(np.asarray(d.brain.genome, dtype=np.float64).reshape(1, -1))
-        trajectory, rollout = d.world.watch(d.brain.policy.decode_batch(genome), shown)
+        batches.setdefault(json.dumps([d.scenarios.fingerprint, d.brain.sensing.range, d.brain.policy.layers]), []).append(i)
+    cells: dict[int, tuple[Any, int, dict[str, Any]]] = {}
+    for members in batches.values():
+        first = deployment.brains[members[0]]
+        assert first.brain is not None
+        shown = list(first.scenarios)[:k]
+        genomes = backend.asarray(np.asarray([cast("Brain", deployment.brains[i].brain).genome for i in members], dtype=np.float64))
+        trajectory, rollout = first.world.watch(first.brain.policy.decode_batch(genomes), shown)
         measured = {name: np.asarray(backend.to_numpy(v), dtype=np.float64) for name, v in rollout.measurements.items()}
-        for j, scenario in enumerate(shown):
-            m = {name: float(values[0, j]) for name, values in measured.items()}
+        for row, i in enumerate(members):
+            cells[i] = (trajectory, row, measured)
+    panels: list[Panel] = []
+    for i, d in enumerate(deployment.brains):
+        trajectory, row, measured = cells[i]
+        for j, scenario in enumerate(list(d.scenarios)[:k]):
+            m = {name: float(values[row, j]) for name, values in measured.items()}
+            outcome = _outcome(m)
             panels.append(
                 Panel(
-                    trajectory,
-                    0,
-                    j,
-                    scenario.params,
-                    d.world.params,
-                    d.name,
-                    f"{scenario.id} · {scenario.params['difficulty']}",
-                    _outcome(m),
-                )  # fmt: skip
+                    trajectory, row, j, scenario.params, d.world.params, d.name, f"{scenario.id} · {scenario.params['difficulty']}", outcome
+                )
             )
     o = deployment.options
     n = len(deployment.brains)
