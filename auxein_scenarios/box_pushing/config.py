@@ -1,47 +1,48 @@
-"""The world's parameters (design doc §2): frozen dataclasses with the design's defaults, and the quantities derived from them.
+"""The world's parameters and the training configuration.
 
-Everything the physics needs is here, so that a world is fully described by one `WorldParams` value that can be written to JSON
-(`to_dict` / `from_dict`) next to a run. **Derived quantities** (the friction thresholds, the box's inertia, the agents' drag,
-the contact damping) are computed in one place, `WorldParams.derived`, and the **stability** of the penalty contacts against
-the substep (design doc §2.6) is checked when the parameters are built, so that an unstable combination is a clear error before
-anything runs rather than a NaN a thousand steps into a run.
+**The world** (`WorldParams`): frozen dataclasses with their defaults, and the quantities derived from them. Everything the
+physics needs is here, so that a world is fully described by one value that can be written to JSON (`to_dict` / `from_dict`)
+next to a run or into a brain file. **Derived quantities** (the friction thresholds, the box's inertia, the agents' drag, the
+contact damping) are computed in one place, `WorldParams.derived`, and the **stability** of the penalty contacts against the
+substep is checked when the parameters are built, so that an unstable combination is a clear error before anything runs rather
+than a NaN a thousand steps into a run.
 
-`SensingParams` (M1b) describes what each agent senses (design doc §3): the number of rays and of teammate sectors and the
-sensing range. It sits beside `WorldParams` rather than inside it, because the physics never reads it: the same world can be
-sensed differently, and the observation's size depends on it alone (`sensors.observation_layout`).
+**What agents sense** (`SensingParams`): only the sensing range is a parameter. It sits beside `WorldParams` rather than inside
+it, because the physics never reads it.
 
-**The training configuration** (M2a, design doc §6): `TrainingConfig`, the whole definition of a run, loaded from TOML
-(`load_config`, `parse_config`) and written back with every default filled in (`dump_config`). Every field has the design
-doc's default, so a config lists only what it changes; unknown keys and bad values are errors that name the key.
+**The training configuration** (`TrainingConfig`): the whole definition of a run, loaded from TOML (`load_config`,
+`parse_config`) and written back with every default filled in (`dump_config`), so that a run's `config.toml` defines it on its
+own. A config lists only what it changes; unknown keys and bad values are errors that name the key, and a key that is not configurable
+says what to do instead (`REMOVED`).
 
 ```toml
 name = "pilot"                       # the run directory's prefix (default: the file's name)
-[world.simulation]                   # any field of WorldParams, by section
+[world.simulation]                   # any field of WorldParams, by section: arena, box, friction, agent, contact, simulation
 max_steps = 900
-[sensing]                            # SensingParams
+[sensing]
+range = 5.0
 [team]
 agents = 40
 [brain]
 hidden = [32]
-scale = 1.0                          # MLPPolicy.space(scale)
 [scenarios]
-easy = 4                             # the training set: 4 easy and 12 full, fixed for the run
-full = 12
+easy = 4                             # the training set: 4 easy and 28 full, fixed for the run
+full = 28
+held_out = 64                        # the held-out set, full difficulty, from seed + 1 on a stream of its own
 seed = 1
-held_out = 64                        # the held-out set (for after the run)
-held_out_seed = 2
-[fitness]                            # fitness.Weights
-[strategy]                           # GeneticAlgorithm
-population = 100
-offspring = 100
-[budget]
+[fitness]
+progress = 1.0
+delivery = 2.0
+time = 1.0
+approach = 0.1
+[evolution]
+population = 100                     # parents, and children per generation
 generations = 400
 [run]
 seed = 1
 backend = "torch"                    # torch or numpy
 device = "mps"                       # mps, cuda or cpu
 precision = "float32"
-checkpoint_every = 10                # generations
 ```
 """
 
@@ -61,26 +62,25 @@ __all__ = [
     "AgentParams",
     "ArenaParams",
     "BoxParams",
+    "BrainConfig",
+    "ConfigError",
     "ContactParams",
     "Derived",
+    "EvolutionConfig",
+    "FitnessConfig",
     "FrictionParams",
-    "STABILITY_LIMIT",
-    "BrainConfig",
-    "BudgetConfig",
-    "ConfigError",
-    "LEGACY_GENERATOR",
+    "REMOVED",
     "RunConfig",
+    "STABILITY_LIMIT",
     "ScenariosConfig",
     "SensingParams",
     "SimulationParams",
-    "StrategyConfig",
     "TeamConfig",
     "TrainingConfig",
-    "config_differences",
+    "WorldParams",
     "dump_config",
     "load_config",
     "parse_config",
-    "WorldParams",
 ]
 
 STABILITY_LIMIT = 1.0
@@ -112,7 +112,7 @@ class BoxParams:
 
 @dataclass(frozen=True)
 class FrictionParams:
-    """The box's friction with the floor (design doc §2.4).
+    """The box's friction with the floor.
 
     - `k`: the number of agents needed to move the box. The static threshold is `F_s = (k − margin) · F_a`, with `F_a` an
       agent's maximum thrust, so `k − 1` agents pushing in line cannot move it and `k` can.
@@ -140,7 +140,7 @@ class FrictionParams:
 
 @dataclass(frozen=True)
 class AgentParams:
-    """The agents: discs with differential drive (design doc §2.5).
+    """The agents: discs with differential drive.
 
     - `max_thrust` (`F_a`): the forward force at action 1; reverse is `reverse_factor` of it.
     - `max_speed`: the terminal speed under full thrust, which sets the linear drag `F_a / max_speed` (`math.inf` turns drag off).
@@ -160,7 +160,7 @@ class AgentParams:
 
 @dataclass(frozen=True)
 class ContactParams:
-    """Penalty contacts (design doc §2.6): a spring `stiffness` and a `damping_ratio` (of critical damping) per contact.
+    """Penalty contacts: a spring `stiffness` and a `damping_ratio` (of critical damping) per contact.
 
     `stiffness` is for every contact involving an agent; `box_stiffness` for the box against walls and obstacles. The box is
     heavier, so the same stiffness would let a pushing crowd press it far into an obstacle; a stiffer spring keeps its overlap
@@ -175,10 +175,10 @@ class ContactParams:
 @dataclass(frozen=True)
 class SimulationParams:
     """Time: `dt` per episode step (the policy acts once per step), `substeps` physics steps per episode step, the step limit,
-    and the target zone's radius (delivery: the box's centre within it, design doc §4.4).
+    and the target zone's radius (delivery: the box's centre within it).
 
-    The step limit is 900 steps (45 s), raised at M2a from 600: four agents move the box at about 0.3 units/s, so 600 steps
-    left a team little time to find the box and push it up to 12 units (design doc §10.2)."""
+    The step limit is 900 steps (45 s): four agents move the box at about 0.3 units/s, so a team needs most of that time to
+    find the box and push it up to 12 units."""
 
     dt: float = 0.05
     substeps: int = 2
@@ -225,7 +225,7 @@ def _damping(ratio: float, stiffness: float, mass: float) -> float:
 
 @dataclass(frozen=True)
 class WorldParams:
-    """Every parameter of the world, with the design doc's defaults. Built, it is valid: see `derived`."""
+    """Every parameter of the world, with its defaults. Built, it is valid: see `derived`."""
 
     arena: ArenaParams = field(default_factory=ArenaParams)
     box: BoxParams = field(default_factory=BoxParams)
@@ -351,47 +351,47 @@ def _float_or_inf(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class SensingParams:
-    """What each agent senses (design doc §3), with the design's defaults.
+    """What each agent senses: `range` (`r`) is the sensing range. The box cue is on within it (the box's centre closer than
+    `r`), teammates are counted within it, distances are normalised by it, and the rays reach as far.
 
-    - `rays`: range rays, evenly spaced around the agent, the first straight ahead.
-    - `range` (`r`): the sensing range. The box cue is on within it (the box's centre closer than `r`), teammates are counted
-      within it, and distances are normalised by it.
-    - `ray_range`: how far the rays reach; `None` (the default) is `range`. A longer ray range lets rays see the box beyond the
-      cue, one of the levers of design doc §10.1.
-    - `sectors`: teammate sectors around the agent, the first centred straight ahead.
+    The number of rays (`RAYS`, evenly spaced around the agent, the first straight ahead) and of teammate sectors (`SECTORS`,
+    the first centred straight ahead) are fixed: they set the observation's size, and so the shape of every brain, which a brain
+    file records and checks. Sensing runs once per episode step, on the state at the start of the step."""
 
-    Sensing runs once per episode step, on the state at the start of the step (not per physics substep).
-    """
+    RAYS: typing.ClassVar[int] = 12
+    SECTORS: typing.ClassVar[int] = 8
 
-    rays: int = 12
     range: float = 5.0
-    ray_range: float | None = None
-    sectors: int = 8
 
     def __post_init__(self) -> None:
-        if self.rays < 1 or self.sectors < 1:
-            raise ValueError(f"rays and sectors must be at least 1, got {self.rays} and {self.sectors}")
-        if not self.range > 0 or (self.ray_range is not None and not self.ray_range > 0):
-            raise ValueError(f"range and ray_range must be positive, got {self.range} and {self.ray_range}")
+        if not (math.isfinite(self.range) and self.range > 0):
+            raise ValueError(f"sensing.range must be positive, got {self.range}")
+
+    @property
+    def rays(self) -> int:
+        return self.RAYS
+
+    @property
+    def sectors(self) -> int:
+        return self.SECTORS
 
     @property
     def reach(self) -> float:
-        """The rays' range: `ray_range`, or `range` when it is not set."""
-        return self.range if self.ray_range is None else self.ray_range
+        """How far the rays reach: the sensing range."""
+        return self.range
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        return {"range": self.range}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SensingParams":
-        known = {f.name for f in fields(cls)}
-        unknown = set(data) - known
+    def from_dict(cls, data: Mapping[str, Any]) -> "SensingParams":
+        unknown = set(data) - {"range"}
         if unknown:
-            raise ValueError(f"unknown sensing parameters {sorted(unknown)}: use {sorted(known)}")
+            raise ValueError(f"unknown sensing parameters {sorted(unknown)}: use ['range']")
         return cls(**data)
 
 
-# --- the training configuration (M2a) ---
+# --- the training configuration ---
 
 
 class ConfigError(ValueError):
@@ -400,7 +400,7 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class TeamConfig:
-    """The team: `agents` per scenario (design doc §4.4)."""
+    """The team: `agents` per scenario, all with the same brain."""
 
     agents: int = 40
 
@@ -411,83 +411,75 @@ class TeamConfig:
 
 @dataclass(frozen=True)
 class BrainConfig:
-    """The shared brain (design doc §3.6): the widths of the hidden layers, and the `scale` of its genome space
-    (`MLPPolicy.space(scale)`: weights within `±scale / √fan_in`, biases within `±scale`)."""
+    """The shared brain: the widths of its hidden layers (`tanh`). Its genome space is `MLPPolicy.space(1.0)`: weights within
+    `±1 / √fan_in` and biases within `±1`, which keeps a random network's pre-activations of order one."""
 
     hidden: tuple[int, ...] = (32,)
-    scale: float = 1.0
 
     def __post_init__(self) -> None:
-        if any(w < 1 for w in self.hidden):
-            raise ValueError(f"brain.hidden widths must be at least 1, got {list(self.hidden)}")
-        if not (math.isfinite(self.scale) and self.scale > 0):
-            raise ValueError(f"brain.scale must be positive, got {self.scale}")
+        if not self.hidden or any(w < 1 for w in self.hidden):
+            raise ValueError(f"brain.hidden must list at least one width, each at least 1, got {list(self.hidden)}")
 
 
 @dataclass(frozen=True)
 class ScenariosConfig:
-    """The scenario sets (design doc §4.2–4.3): the training set, `easy` then `full` scenarios from `seed`, **fixed for the whole
-    run** (parents and children are judged on the same scenarios); the held-out set, `held_out` full scenarios from
-    `held_out_seed`, used only after the run.
+    """The scenario sets. The training set is `easy` then `full` scenarios from `seed`, **fixed for the whole run** (parents
+    and children are judged on the same scenarios). The held-out set is `held_out` full scenarios from `held_out_seed`, used
+    only to judge brains after training.
 
-    `generator` is the version of the scenario generator (`scenarios.GENERATORS`): 2, the default, keeps the box clear of
-    walls and obstacles; 1 is the generator before M2b. **A config file without it means 1** (`parse_config`), unlike every
-    other missing key, which takes today's default: runs recorded before M2b have no `generator` in their `config.toml`, and
-    must rebuild exactly the scenarios they were trained and judged on."""
+    The held-out seed is `seed + 1`, and its layouts come from a random stream of their own (another name than the training
+    set's), so the two sets cannot share a layout even if their seeds were equal; the run checks it (`check_disjoint`)."""
 
     easy: int = 4
     full: int = 28
-    seed: int = 1
     held_out: int = 64
-    held_out_seed: int = 2
-    generator: int = 2
+    seed: int = 1
 
     def __post_init__(self) -> None:
         if self.easy < 0 or self.full < 0 or self.easy + self.full < 1:
             raise ValueError(f"scenarios.easy and scenarios.full must not be negative and not both 0, got {self.easy} and {self.full}")
         if self.held_out < 1:
             raise ValueError(f"scenarios.held_out must be at least 1, got {self.held_out}")
-        if self.seed < 0 or self.held_out_seed < 0:
-            raise ValueError("scenarios.seed and scenarios.held_out_seed must not be negative")
-        if self.generator not in (1, 2):
-            raise ValueError(f"scenarios.generator must be 1 (before M2b) or 2 (box clearance), got {self.generator}")
+        if self.seed < 0:
+            raise ValueError(f"scenarios.seed must not be negative, got {self.seed}")
+
+    @property
+    def held_out_seed(self) -> int:
+        return self.seed + 1
 
 
 @dataclass(frozen=True)
-class StrategyConfig:
-    """Auxein's `GeneticAlgorithm` (design doc §6): `population` parents and `offspring` children per generation, plus
-    selection, tournaments of `tournament_size`, intermediate recombination with `crossover_probability`, and self-adaptive
-    mutation starting at `initial_step` (relative to the box's width)."""
+class FitnessConfig:
+    """The weights of the per-episode score (`fitness.Weights`): progress toward the target, the delivery bonus, the time bonus
+    for delivering early, and the approach term. The progress term's floor stays at −1."""
 
-    population: int = 100
-    offspring: int = 100
-    crossover_probability: float = 1.0
-    tournament_size: int = 2
-    initial_step: float = 0.1
+    progress: float = 1.0
+    delivery: float = 2.0
+    time: float = 1.0
+    approach: float = 0.1
 
     def __post_init__(self) -> None:
-        if self.population < 2:
-            raise ValueError(f"strategy.population must be at least 2, got {self.population}")
-        if self.offspring < 1:
-            raise ValueError(f"strategy.offspring must be at least 1, got {self.offspring}")
-        if not 0.0 <= self.crossover_probability <= 1.0:
-            raise ValueError(f"strategy.crossover_probability must be in [0, 1], got {self.crossover_probability}")
-        if self.tournament_size < 1:
-            raise ValueError(f"strategy.tournament_size must be at least 1, got {self.tournament_size}")
-        if not self.initial_step > 0:
-            raise ValueError(f"strategy.initial_step must be positive, got {self.initial_step}")
+        _ = self.weights  # validates: finite and not negative
+
+    @property
+    def weights(self) -> Weights:
+        return Weights(self.progress, self.delivery, self.time, self.approach)
 
 
 @dataclass(frozen=True)
-class BudgetConfig:
-    """How long the run is, in generations: the initial population, then `generations − 1` generations of children. The only
-    thing a resume may change."""
+class EvolutionConfig:
+    """Auxein's `GeneticAlgorithm`: `population` parents and as many children per generation, for `generations` generations
+    (the initial population, then `generations − 1` generations of children). The number of generations is the only thing a
+    resume may change. Selection, recombination and mutation are fixed in the training code."""
 
+    population: int = 100
     generations: int = 400
 
     def __post_init__(self) -> None:
+        if self.population < 2:
+            raise ValueError(f"evolution.population must be at least 2, got {self.population}")
         if self.generations < 1:
-            raise ValueError(f"budget.generations must be at least 1, got {self.generations}")
+            raise ValueError(f"evolution.generations must be at least 1, got {self.generations}")
 
 
 BACKENDS = ("numpy", "torch")
@@ -496,14 +488,12 @@ PRECISIONS = ("float32", "float64")
 
 @dataclass(frozen=True)
 class RunConfig:
-    """The run: its `seed`, where it computes (torch float32 on Metal by default; design doc §6), and how often it checkpoints
-    (`checkpoint_every` generations)."""
+    """The run: its `seed` and where it computes (torch float32 on Metal by default, the fastest on an Apple laptop)."""
 
     seed: int = 1
     backend: str = "torch"
     device: str = "mps"
     precision: str = "float32"
-    checkpoint_every: int = 10
 
     def __post_init__(self) -> None:
         if self.seed < 0:
@@ -514,13 +504,11 @@ class RunConfig:
             raise ValueError(f"run.precision must be one of {list(PRECISIONS)}, got {self.precision!r}")
         if self.backend == "numpy" and self.device != "cpu":
             raise ValueError(f"run.device must be 'cpu' for numpy, got {self.device!r}")
-        if self.checkpoint_every < 1:
-            raise ValueError(f"run.checkpoint_every must be at least 1 generation, got {self.checkpoint_every}")
 
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    """Everything that defines a training run (module docstring), with the design doc's defaults."""
+    """Everything that defines a training run (module docstring), with its defaults."""
 
     name: str = "box-pushing"
     world: WorldParams = field(default_factory=WorldParams)
@@ -528,9 +516,8 @@ class TrainingConfig:
     team: TeamConfig = field(default_factory=TeamConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
     scenarios: ScenariosConfig = field(default_factory=ScenariosConfig)
-    fitness: Weights = field(default_factory=Weights)
-    strategy: StrategyConfig = field(default_factory=StrategyConfig)
-    budget: BudgetConfig = field(default_factory=BudgetConfig)
+    fitness: FitnessConfig = field(default_factory=FitnessConfig)
+    evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
     run: RunConfig = field(default_factory=RunConfig)
 
     def __post_init__(self) -> None:
@@ -539,16 +526,32 @@ class TrainingConfig:
 
     @property
     def evaluations(self) -> int:
-        """The evaluation budget: the initial population, then `generations − 1` generations of `offspring` children."""
-        return self.strategy.population + (self.budget.generations - 1) * self.strategy.offspring
+        """The evaluation budget: the initial population, then `generations − 1` generations of as many children."""
+        return self.evolution.population * self.evolution.generations
 
     @property
     def max_steps(self) -> int:
         return self.world.simulation.max_steps
 
     def with_generations(self, generations: int) -> "TrainingConfig":
-        """The same run with another budget (the one change a resume allows)."""
-        return _replace_dataclass(self, budget=BudgetConfig(generations))
+        """The same run with another number of generations (the one change a resume allows)."""
+        return _replace_dataclass(self, evolution=EvolutionConfig(self.evolution.population, generations))
+
+
+REMOVED: dict[str, str] = {
+    "strategy": "use [evolution] population (children per generation equal the population; selection, recombination and "
+    "mutation are fixed)",
+    "budget": "use [evolution] generations",
+    "scenarios.generator": "there is one scenario generator, which keeps the box clear of walls and obstacles",
+    "scenarios.held_out_seed": "the held-out seed is scenarios.seed + 1",
+    "sensing.rays": f"the agents have {SensingParams.RAYS} rays",
+    "sensing.sectors": f"the agents count teammates in {SensingParams.SECTORS} sectors",
+    "sensing.ray_range": "the rays reach as far as sensing.range",
+    "brain.scale": "the genome space's scale is 1.0",
+    "run.checkpoint_every": "a run checkpoints every 10 generations",
+    "fitness.progress_floor": "the progress term's floor is −1",
+}
+"""Keys that are not configurable, with what to do instead: the message of the error that names them."""
 
 
 def _replace_dataclass(value: Any, **changes: Any) -> Any:
@@ -597,6 +600,8 @@ def _build(cls: type[Any], data: object, path: str) -> Any:
     for key in table:
         if key not in known:
             where = f"{path}.{key}" if path else key
+            if where in REMOVED:
+                raise ConfigError(f"{where!r} is not a config key: {REMOVED[where]}")
             raise ConfigError(f"unknown key {where!r}: {path or 'the config'} has {known}")
     values: dict[str, Any] = {}
     for name in known:
@@ -613,10 +618,6 @@ def _build(cls: type[Any], data: object, path: str) -> Any:
         raise ConfigError(message if path == "" or message.startswith(f"{path}.") else f"{path}: {message}") from None
 
 
-LEGACY_GENERATOR = 1
-"""What a config file without `scenarios.generator` means: the generator before M2b (see `ScenariosConfig`)."""
-
-
 def parse_config(text: str, *, name: str | None = None) -> TrainingConfig:
     """A `TrainingConfig` from TOML text; `name` is the default for its `name` (e.g. the file's name)."""
     try:
@@ -625,9 +626,6 @@ def parse_config(text: str, *, name: str | None = None) -> TrainingConfig:
         raise ConfigError(f"the config is not valid TOML: {error}") from None
     if name is not None and "name" not in data:
         data["name"] = name
-    scenarios = data.setdefault("scenarios", {})
-    if isinstance(scenarios, dict) and "generator" not in scenarios:
-        scenarios["generator"] = LEGACY_GENERATOR  # a config from before M2b: its scenarios are generator 1's
     return typing.cast("TrainingConfig", _build(TrainingConfig, data, ""))
 
 
@@ -666,25 +664,14 @@ def _toml_value(value: Any) -> str:
 
 
 def dump_config(config: TrainingConfig) -> str:
-    """The effective config as TOML, every field written (defaults included), so that it defines the run on its own. A field
-    that is `None` (`sensing.ray_range`, meaning "the sensing range") is left out, as TOML has no null."""
+    """The effective config as TOML, every field written (defaults included), so that it defines the run on its own."""
     lines = [f"name = {_toml_value(config.name)}"]
     tables: dict[str, list[str]] = {}
     for key, value in _flat(config).items():
-        if key == "name" or value is None:
+        if key == "name":
             continue
         table, _, leaf = key.rpartition(".")
         tables.setdefault(table, []).append(f"{leaf} = {_toml_value(value)}")
     for table, entries in tables.items():
         lines += ["", f"[{table}]", *entries]
     return "\n".join(lines) + "\n"
-
-
-def config_differences(recorded: TrainingConfig, given: TrainingConfig, *, ignore: tuple[str, ...] = ("budget.", "name")) -> list[str]:
-    """The keys whose values differ between two configs, as `key: recorded …, given …` lines, except those under `ignore`."""
-    a, b = _flat(recorded), _flat(given)
-    return [
-        f"{key}: recorded {a.get(key)!r}, given {b.get(key)!r}"
-        for key in sorted(set(a) | set(b))
-        if not any(key == i or key.startswith(i) for i in ignore) and a.get(key) != b.get(key)
-    ]
