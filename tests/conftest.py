@@ -38,16 +38,27 @@ def corner_backend(request: pytest.FixtureRequest) -> Backend:
     return Backend(name, "cpu", precision)
 
 
-def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """On GitHub Actions, each failure is also printed as an `::error` workflow command, which GitHub shows as an annotation on
-    the run and the pull request, readable without opening the log."""
+def _annotate(nodeid: str, when: str, longrepr: object) -> None:
+    """On GitHub Actions, a failure is also printed as an `::error` workflow command, which GitHub shows as an annotation on the
+    run and the pull request, readable without opening the log."""
     import os
     import sys
 
-    if os.environ.get("GITHUB_ACTIONS") != "true" or not report.failed:
+    out = sys.__stdout__
+    if os.environ.get("GITHUB_ACTIONS") != "true" or out is None:
         return
-    text = str(report.longrepr).splitlines()
+    text = str(longrepr).splitlines()
     lines = [line for line in text if line.startswith("E ")][:12] or text[-12:]
     message = "%0A".join(line.replace("%", "%25").replace("\r", "") for line in lines)
-    sys.__stdout__.write(f"\n::error title={report.nodeid} ({report.when})::{message}\n")  # past pytest's capture
-    sys.__stdout__.flush()
+    out.write(f"\n::error title={nodeid} ({when})::{message}\n")  # past pytest's capture
+    out.flush()
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    if report.failed:
+        _annotate(report.nodeid, report.when, report.longrepr)
+
+
+def pytest_collectreport(report: pytest.CollectReport) -> None:
+    if report.failed:
+        _annotate(report.nodeid, "collection", report.longrepr)
