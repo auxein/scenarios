@@ -248,7 +248,8 @@ def _digest(recording: Path) -> str:
 
 def test_the_same_numbers_as_before(tmp_path: Path) -> None:
     """A smoke run pinned from the code before brains and deploy (`data/pre_r1_smoke.json`), trained again: the same
-    evaluations and final best on every platform, and the same event log bit for bit where it was pinned."""
+    evaluations and final best on every platform, and the same event log bit for bit on the machine type it was pinned on
+    (elsewhere a float's last bit differs: libm, and the SIMD kernels numpy picks for the CPU)."""
     pin = json.loads((DATA / "pre_r1_smoke.json").read_text())
     config = parse_config(pin["config"])
     run_dir = tmp_path / "pin"
