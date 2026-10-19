@@ -1,6 +1,6 @@
-"""The box-pushing world as an Auxein environment (design doc §2.9, §2.11): sensing, the brain, the physics and the measurements.
+"""The box-pushing world as an Auxein environment: sensing, the brain, the physics and the measurements.
 
-`BoxPushingWorld` implements **both** of Auxein's environment interfaces around the M1a physics core (`world.py`) and the sensors
+`BoxPushingWorld` implements **both** of Auxein's environment interfaces around the physics core (`world.py`) and the sensors
 (`sensors.py`):
 
 - **`run_batch(agents, scenarios, rng)`**, the batched path `EpisodeEvaluator` takes when the decoder has `decode_batch`: every
@@ -9,12 +9,12 @@
 - **`roles` and `run_episode(agents, scenario, rng)`**, the per-episode path `EpisodeEvaluator` requires of every environment:
   the same code with one candidate and one scenario, the single agent's `act` applied to the team's `(N, size)` observations.
 
-**One step loop** (`BoxPushingWorld.run`) serves both paths and rendering (design doc §2.9): observe the state at the start of the
-step → the policy's actions → one physics step, stopping early once every scenario of every candidate is done. An optional
-**hook** sees every state with what the agents sensed in it, so that a clip records exactly the episode that would be scored.
+**One step loop** (`BoxPushingWorld.run`) serves both paths and rendering: observe the state at the start of the step → the
+policy's actions → one physics step, stopping early once every scenario of every candidate is done. An optional **hook** sees
+every state with what the agents sensed in it, so that a video records exactly the episode that would be scored.
 
-- **No randomness.** The world has none of its own (design doc §4.1): a scenario's layout is entirely in its params, and the
-  brain is deterministic. `rng` (the agents' stream) is accepted, as Auxein's interfaces require, and unused.
+- **No randomness.** The world has none of its own: a scenario's layout is entirely in its params, and the brain is
+  deterministic. `rng` (the agents' stream) is accepted, as Auxein's interfaces require, and unused.
 - **The layout cache.** The padded `Layout` arrays of a scenario sequence are built once and cached by the scenarios'
   fingerprint (ids, seeds and params, as Auxein's `ScenarioSet` computes it) and the backend, so that a run's generations, which
   all use the training set, do not rebuild them.
@@ -23,7 +23,7 @@ step → the policy's actions → one physics step, stopping early once every sc
   so that candidate, as failed, and the rest of the batch goes on. Its measurements are meaningless and ignored, as Auxein's
   contract says.
 
-The measurements (design doc §5.2), raw, never a score:
+The measurements, raw, never a score (the score is the fitness's, so weights can change without re-simulating):
 
 | Measurement | Meaning |
 |---|---|
@@ -45,7 +45,7 @@ from dataclasses import dataclass, fields
 from typing import Any, cast
 
 import numpy as np
-from auxein.backend import Array, Backend, HostArray, backend_of
+from auxein.backend import Array, Backend, backend_of
 from auxein.core import Status
 from auxein.environments import EpisodeBatchResult, EpisodeFailure, EpisodeResult, MLPPolicy, Scenario
 from auxein.random import RandomStream
@@ -64,9 +64,7 @@ __all__ = [
     "TOUCH_TOLERANCE",
     "BoxPushingWorld",
     "Rollout",
-    "SensingTrace",
     "StepHook",
-    "WatchRecorder",
     "brain",
 ]
 
@@ -74,13 +72,13 @@ ROLE = "team"
 """The one evolved role: the team's shared brain."""
 
 ACTIONS = 2
-"""The brain's outputs: thrust and turning, in `[-1, 1]` (design doc §3.6)."""
+"""The brain's outputs: thrust and turning, in `[-1, 1]`."""
 
 HIDDEN = (32,)
-"""The brain's hidden layers by default: one of 32 `tanh` units (design doc §3.6)."""
+"""The brain's hidden layers by default: one of 32 `tanh` units."""
 
 MEASUREMENTS = ("delivered", "steps", "initial_distance", "final_distance", "approach", "max_pushers")
-"""The measurements every episode reports (design doc §5.2)."""
+"""The measurements every episode reports."""
 
 TOUCH_TOLERANCE = 0.02
 """An agent touches the box when the gap between its disc and the box's surface is at most this (contacts overlap slightly, or
@@ -94,7 +92,7 @@ Act = Callable[[Array], Array]
 
 
 def brain(sensing: SensingParams | None = None, hidden: Sequence[int] = HIDDEN) -> MLPPolicy:
-    """The team's brain (design doc §3.6): an `MLPPolicy` from the observation (its size from `sensors.observation_layout`) to
+    """The team's brain: an `MLPPolicy` from the observation (its size from `sensors.observation_layout`) to
     the two actions, `tanh` hidden layers and `tanh` outputs."""
     return MLPPolicy(observation_layout(sensing).size, tuple(hidden), ACTIONS, activation="tanh", output="tanh")
 
@@ -160,7 +158,7 @@ def _keep(mask: Array, old: State, new: State) -> State:
 class BoxPushingWorld:
     """The world as an Auxein `Environment` and `BatchedEnvironment` (see the module docstring).
 
-    - `params`, `sensing`: the world and what agents sense (defaults: the design doc's).
+    - `params`, `sensing`: the world and what agents sense (defaults: `WorldParams()`, `SensingParams()`).
     - `steps`: the episode's step limit (default `params.simulation.max_steps`).
     - `backend`: where `run_episode` simulates, and `run_batch` when its agents do not say (numpy float64 by default); `run_batch`
       otherwise simulates where the agents' networks are, so that nothing crosses devices.
@@ -194,7 +192,8 @@ class BoxPushingWorld:
 
     def describe(self) -> str:
         """A description that is the same in every process (Auxein compares it on resume): the parameters, as JSON."""
-        document = {"world": self.params.to_dict(), "sensing": self.sensing.to_dict(), "steps": self.steps}
+        sensing = {**self.sensing.to_dict(), "rays": self.sensing.rays, "sectors": self.sensing.sectors}
+        document = {"world": self.params.to_dict(), "sensing": sensing, "steps": self.steps}
         return f"BoxPushingWorld({json.dumps(document, sort_keys=True, separators=(',', ':'))})"
 
     def __repr__(self) -> str:
@@ -265,21 +264,17 @@ class BoxPushingWorld:
         }
         return Rollout(state, measurements, failed, failed_step)
 
-    def watch(
-        self,
-        policy: Any,
-        scenarios: Sequence[Scenario],
-        *,
-        agents: Sequence[int] = (),
-        stop_when_done: bool = True,
-    ) -> "tuple[Trajectory, SensingTrace | None, Rollout]":
+    def watch(self, policy: Any, scenarios: Sequence[Scenario], *, stop_when_done: bool = True) -> tuple[Trajectory, Rollout]:
         """Runs `policy` (a batch policy, as `run_batch` takes) on `scenarios` through the same step loop as training, recording
-        every step for rendering: the trajectory, what the agents in `agents` sensed (for the overlay; none by default), and the
-        rollout with its measurements. For clips, which show a few candidates on a few scenarios."""
+        every step for rendering: the trajectory and the rollout with its measurements. For videos, which show a few
+        candidates on a few scenarios (the trajectory is kept on the host, every step)."""
         backend, n = self._batch_of(policy)
-        recorder = WatchRecorder(agents, self.sensing)
-        rollout = self.run(cast("Act", policy.act_batch), self.layout(scenarios, backend), n, hook=recorder, stop_when_done=stop_when_done)
-        return recorder.trajectory(), recorder.senses(), rollout
+        recorder = TrajectoryRecorder()
+        rollout = self.run(
+            cast("Act", policy.act_batch), self.layout(scenarios, backend), n, hook=lambda t, state, _: recorder(t, state),
+            stop_when_done=stop_when_done,
+        )  # fmt: skip
+        return recorder.trajectory(), rollout
 
     # --- Auxein's interfaces ---
 
@@ -340,59 +335,3 @@ class BoxPushingWorld:
                 "(a physics blow-up, or non-finite actions): the scenario was frozen and its measurements are not meaningful",
             )
         return out
-
-
-# --- watching: what the hook records for rendering ---
-
-
-@dataclass(frozen=True)
-class SensingTrace:
-    """What chosen agents sensed at every recorded step, on the host, for the overlay: `(T, n, s, A, ...)` with `A` the chosen
-    agents (`agents`, their indices in the team)."""
-
-    agents: tuple[int, ...]
-    ray_x: HostArray  # (T, n, s, A, R)
-    ray_y: HostArray
-    ray_hit: HostArray
-    teammate_weight: HostArray  # (T, n, s, A, N)
-    teammate_sector: HostArray
-    box_on: HostArray  # (T, n, s, A)
-
-
-class WatchRecorder:
-    """A `StepHook` that records the trajectory (as `world.TrajectoryRecorder`) and, for the agents in `watch`, what they sensed.
-
-    Recorded on the host, every step: for clips, which run a few candidates on a few scenarios."""
-
-    def __init__(self, watch: Sequence[int] = (), sensing: SensingParams | None = None) -> None:
-        self.watch = tuple(int(a) for a in watch)
-        self._flag = observation_layout(sensing)["box_flag"].start
-        self._trajectory = TrajectoryRecorder()
-        self._senses: dict[str, list[HostArray]] = {
-            k: [] for k in ("ray_x", "ray_y", "ray_hit", "teammate_weight", "teammate_sector", "box_on")
-        }
-
-    def __call__(self, t: int, state: State, senses: Senses) -> None:
-        self._trajectory(t, state)
-        if not self.watch:
-            return
-        backend, chosen = state.backend, list(self.watch)
-        host = {
-            "ray_x": senses.ray_x,
-            "ray_y": senses.ray_y,
-            "ray_hit": senses.ray_hit,
-            "teammate_weight": senses.teammate_weight,
-            "teammate_sector": senses.teammate_sector,
-        }
-        for name, array in host.items():
-            self._senses[name].append(np.asarray(backend.to_numpy(array))[:, :, chosen])
-        self._senses["box_on"].append(np.asarray(backend.to_numpy(senses.observation))[:, :, chosen, self._flag] > 0.5)
-
-    def trajectory(self) -> Trajectory:
-        return self._trajectory.trajectory()
-
-    def senses(self) -> SensingTrace | None:
-        if not self.watch:
-            return None
-        stacked = {name: np.stack(values) for name, values in self._senses.items()}  # pyright: ignore[reportUnknownMemberType]
-        return SensingTrace(agents=self.watch, **stacked)

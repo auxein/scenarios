@@ -13,6 +13,20 @@ the results. Package: `auxein_scenarios` (`common/` for shared helpers, one subp
   (§9), recording and the reader (§10).
 - **The log of Auxein issues**: [`docs/auxein-issues.md`](docs/auxein-issues.md), including any open `AUXEIN-WORKAROUND`.
 
+## Commands
+
+Two verbs per scenario, one entry point: `uv run [--extra torch] scenarios <scenario> train|deploy` (the registry is in
+`auxein_scenarios/common/cli.py`). Use `--extra torch` with `uv run` whenever torch is used, or uv uninstalls it.
+
+- `scenarios box-pushing train CONFIG` (and `--resume RUN [--generations N]`) writes `runs/<name>-<timestamp>/`:
+  `config.toml`, `progress.csv`, `held_out.csv`, `recording/` (Auxein's), `brains/` (`gen-<k>.safetensors`, `final.safetensors`)
+  and `charts/`. Training only, no video.
+- `scenarios box-pushing deploy BRAIN... [--scenarios N] [--difficulty full|easy] [--seed S] [--agents N] [--backend/--device/
+  --precision] [--no-video] [--video-scenarios K] [--out DIR]` writes `deployments/<name>-<timestamp>/`: `deploy.toml`,
+  `results.csv`, `summary.md`, `deployment.mp4`. Videos come only from `deploy`, charts only from `train`.
+- Presets in `configs/`: `smoke.toml` (seconds, numpy; the tests' run), `pilot.toml` (full sizes, 25 generations, about 25
+  minutes on Metal), `full.toml` (400 generations, about 6 hours).
+
 ## Quality bar (the same as Auxein's)
 
 - `uv run ruff check`, `uv run ruff format --check`, `uv run pyright` (strict on `auxein_scenarios`) and `uv run pytest` all
@@ -21,6 +35,9 @@ the results. Package: `auxein_scenarios` (`common/` for shared helpers, one subp
 - Numeric code is written against the Array API namespace of its inputs and follows Auxein's rules (core design §7.2): no in-place
   mutation, no global random state, arrays stay on their device, correct in float32. No Python loops over candidates, scenarios
   or agents in anything that runs per step.
+- **Code, tests, benchmarks and configs never refer to the design doc, `CLAUDE.md` or milestones**: no section numbers, no
+  "design doc", no `M1a`, "decided at …", "as built" or numbered decisions. Where a pointer would carry a reason, state the reason
+  in place. History and decisions live in the design doc; `tests/standalone_test.py` searches for such pointers.
 - Small commits, one PR per milestone on its own branch. Never push to `main`, never tag, never publish.
 
 ## Working on Auxein from this repository

@@ -1,10 +1,8 @@
-# The overnight run: the full sizes for 400 generations (about 6.2 hours on the M4's GPU at 56 s per generation, twice
-# M2a's 16 scenarios), with a checkpoint every 10 generations; a recording of about 0.7 GB.
-#   uv run --extra torch box-pushing train configs/full.toml
-#   uv run --extra torch box-pushing train --resume runs/full-<timestamp>                    # after an interruption
-#   uv run --extra torch box-pushing train --resume runs/full-<timestamp> --generations 600  # to extend it
-# The defaults (docs/design/box-pushing.md §6) are the full sizes; they are written out here so the file reads on its own.
-# Generator 2 (M2b): the box starts clear of walls and obstacles. A config without `generator` means generator 1.
+# A full run: 400 generations, about 6.2 hours on an Apple-silicon laptop's GPU (56 s per generation), a recording of about 0.7 GB.
+#   uv run --extra torch scenarios box-pushing train configs/full.toml
+#   uv run --extra torch scenarios box-pushing train --resume runs/full-<timestamp>                    # after an interruption
+#   uv run --extra torch scenarios box-pushing train --resume runs/full-<timestamp> --generations 600  # to extend it
+# Every other value is the default: torch float32 on Metal, 900 steps, the default fitness weights.
 
 [team]
 agents = 40
@@ -12,17 +10,8 @@ agents = 40
 [scenarios]
 easy = 4
 full = 28
-generator = 2
+held_out = 64
 
-[strategy]
+[evolution]
 population = 100
-offspring = 100
-
-[budget]
 generations = 400
-
-[run]
-backend = "torch"
-device = "mps"
-precision = "float32"
-checkpoint_every = 10

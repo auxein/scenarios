@@ -225,5 +225,5 @@ runs/
 *.mp4
 !media/**/*.mp4
 
-# Demo clips, galleries and other local renders
-out/
+# Deployments: results and videos of trained brains
+deployments/

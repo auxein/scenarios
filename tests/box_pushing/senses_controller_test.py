@@ -1,4 +1,4 @@
-"""The senses-only controller (design doc §10.1): a feasibility check that the observation carries what the task needs."""
+"""The senses-only controller: a feasibility check that the observation carries what the task needs."""
 
 import numpy as np
 from auxein.backend import Backend

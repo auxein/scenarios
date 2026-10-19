@@ -1,4 +1,4 @@
-"""The penalty contact model (design doc §2.6): forces and torques from overlaps, for every contact pair at once.
+"""The penalty contact model: forces and torques from overlaps, for every contact pair at once.
 
 A contact between two bodies that overlap by `δ > 0` produces a spring–damper force `k δ + c δ̇` along the contact normal,
 **only pushing**: the magnitude is clamped at zero, so a damper never pulls bodies together as they separate. `δ̇` is the rate at
@@ -16,7 +16,8 @@ The pairs, each a function here, returning forces (and, for the box, torques abo
 | oriented box–axis-aligned rectangle | `box_rects` | corner penetration both ways (below) |
 | everything–wall | `agent_walls`, `box_walls` | half-planes; the box by its four corners |
 
-**Dense arrays reduced with sums, never scatters** (design doc §2.1), so results are deterministic on every device. Agent pairs
+**Dense arrays reduced with sums, never scatters**, so results are deterministic on every device (scatter-adds on a GPU sum in
+an order that varies from run to run). Agent pairs
 are `(..., N, N)` arrays summed over the partner axis. Obstacles are padded to a fixed count per batch with a validity mask, so
 layouts with different numbers of obstacles share arrays; their contributions are **accumulated slot by slot**, in a Python loop
 over the (few) obstacle slots, never over candidates, scenarios or agents. That makes padding exact: a padded slot adds an exact

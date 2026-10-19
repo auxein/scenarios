@@ -1,5 +1,5 @@
-"""The full performance probe (M1b): seconds per generation of the whole episode loop (sensing, the brain, the physics), broken
-down by part, to choose the backend and the default sizes for M2 (design doc §10.3).
+"""The full performance probe: seconds per generation of the whole episode loop (sensing, the brain, the physics), broken down
+by part, to choose the backend and the sizes of a run.
 
 For each backend, team size and batch (`n` candidates × `s` scenarios, the scenarios a quarter easy and the rest full, as the
 training mix), random brains sampled from `MLPPolicy.space()` (the GA's first generation, which never delivers, so every step
@@ -9,7 +9,7 @@ is simulated) act on their own senses:
   timed on its own, with the device synchronised around it;
 - **loop**: `--steps` steps of `BoxPushingWorld.run` itself, which also tracks the measurements, checks for non-finite states
   and the early stop: the number a generation actually costs;
-- **generation**: the loop's time per step × the step limit (600): an upper bound, since delivered scenarios still cost compute;
+- **generation**: the loop's time per step × the step limit: an upper bound, since delivered scenarios still cost compute;
 - **memory**, where the backend reports it: numpy's peak through `tracemalloc` (numpy reports its allocations to it); on
   Metal, from `torch.mps`, the peak of what tensors hold during the loop (`current_allocated_memory`, sampled every step) and
   what the driver holds at its end (`driver_allocated_memory`, torch's cache included, emptied before each configuration so
@@ -24,7 +24,7 @@ runs its whole loop once untimed, so it does not pay for kernels of its own shap
     uv run python -m benchmarks.probe --agents 20 40 --batches 50x16 100x32
 
 It ends with **a recommendation**: on the fastest backend measured, the largest team and batch whose generation fits the budget
-(`--budget`, 60 s by default: about a minute per generation, design doc §10.3).
+(`--budget`, 60 s by default: about a minute per generation keeps a 400-generation run to an overnight one).
 """
 
 import argparse

@@ -1,6 +1,6 @@
 # Cooperative box-pushing: design
 
-**Status:** Draft for review · **Date:** 2026-10-19 · **Auxein:** `v0.3.3` · **Milestone:** M2b (box clearance, generator versions, 4 + 28 training scenarios, comparing runs) and the second overnight run (§10.9)
+**Status:** Draft for review · **Date:** 2026-10-20 · **Auxein:** `v0.3.3` · **Milestone:** R1 (two verbs, `train` and `deploy`; brains as safetensors; a smaller config)
 
 ---
 
@@ -45,12 +45,10 @@
   to a wall redraws the layout; an obstacle drawn too close to the box is drawn again (as obstacles too close to the box or
   the target always were). The target, the obstacles' sizes and the agents' spawns are drawn as before. It is
   `Difficulty.box_clearance` (`scenarios.BOX_CLEARANCE`), at both difficulties.
-- **Generator versions.** A run's scenarios are generated from its config, so changing the generator would silently change
-  an old run's scenarios: its resume would be refused (the scenario set's fingerprint is in Auxein's description of the
-  evaluator), and its report would judge it on other held-out layouts. So the generator has **versions**
-  (`scenarios.GENERATORS`): **1** is the generator before M2b, kept bit for bit (`EASY`, `FULL`), and **2** adds the clearance
-  (`EASY_2`, `FULL_2`). The config names the version (`scenarios.generator`, §6.1). Tests pin version 1 against `main` before
-  M2b: the sets' fingerprints and params for the old presets, and a run recorded then, which reports the same CSV and resumes.
+- **One generator** (since R1). M2b kept the generator before the clearance as **version 1**, bit for bit, so that runs
+  recorded before M2b could still be resumed and reported (`scenarios.generator` in their config). R1 dropped those runs and
+  removed version 1 with the config key: the generator is the former version 2, unchanged (its sets are pinned against it),
+  and `EASY` and `FULL` carry the clearance.
 
 ### 2.3 The box
 
@@ -109,7 +107,7 @@ Episodes end early on delivery (§4.4), but a batched world cannot drop a scenar
 
 ### 2.9 What `run_batch` returns, and rendering
 
-`run_batch(agents, scenarios, rng)` returns an `EpisodeBatchResult` of **raw measurements** (§5.2), each an `(n, s)` array on the backend, as Auxein's environments do: the score is the aggregator's (§5.1). For rendering (§7), the same simulation can be run for one genome on a few scenarios with a hook that records the states at every step (positions, headings, the box's pose); one code path serves training and rendering, so the clips show what was scored. Built at M1a: `simulate(..., hook=TrajectoryRecorder(), every=k)` copies the state to host numpy arrays every `k`th step, and the renderer draws the resulting `Trajectory`, for the scripted controllers that read the true state. **Built at M1b** (§2.11): `BoxPushingWorld.run`, the step loop of `run_batch` and `run_episode`, takes a hook that sees each step's state with what the agents sensed in it, and `BoxPushingWorld.watch` records both for clips of brains (`WatchRecorder`), so a clip of a brain is the episode that would be scored.
+`run_batch(agents, scenarios, rng)` returns an `EpisodeBatchResult` of **raw measurements** (§5.2), each an `(n, s)` array on the backend, as Auxein's environments do: the score is the aggregator's (§5.1). For rendering (§7), the same simulation can be run for one genome on a few scenarios with a hook that records the states at every step (positions, headings, the box's pose); one code path serves training and rendering, so the clips show what was scored. Built at M1a: `simulate(..., hook=TrajectoryRecorder(), every=k)` copies the state to host numpy arrays every `k`th step, and the renderer draws the resulting `Trajectory`, for the scripted controllers that read the true state. **Built at M1b** (§2.11): `BoxPushingWorld.run`, the step loop of `run_batch` and `run_episode`, takes a hook that sees each step's state with what the agents sensed in it, and `BoxPushingWorld.watch` records the trajectory for videos of brains, so a video of a brain is the episode that would be scored (M1b's recorder of what agents sensed, for the sensing overlay, was removed at R1).
 
 ### 2.10 The physics core as built (M1a)
 
@@ -192,7 +190,7 @@ With one hidden layer of 32 units and 2 outputs, the genome is `43 × 32 + 32` (
 
 ### 3.8 Sensing as built (M1b)
 
-**The observation layout is defined once**, in `sensors.observation_layout(sensing)`: the named parts of the vector, their slices and sizes (derived from `SensingParams`: `rays = 12`, `range = 5`, `ray_range = None` (the same as `range`), `sectors = 8`), and the range of each. The environment, the senses-only controller, the overlay and the smoke test read it from there.
+**The observation layout is defined once**, in `sensors.observation_layout(sensing)`: the named parts of the vector, their slices and sizes (12 rays and 8 sectors, fixed in code since R1; `SensingParams` holds only `range = 5`, which the rays reach too), and the range of each. The environment, the senses-only controller, the brain files (which record it and refuse another, §7.1) and the smoke test read it from there.
 
 | Part | Slice | Values | Range |
 |---|---|---|---|
@@ -244,12 +242,12 @@ to fit about half a minute per generation on Metal (§10.3); the overnight run t
 training (0.10 to 0.24, §10.8), part of what later generations learned being the maps, so M2b gives the run **more full
 layouts**. The cost is about twice the time per generation: the probe's 100 × 32 row is 41 s at 600 steps, about a minute at
 900; **the new pilot measured 56 s per generation, so the overnight run is about 6.2 hours** for 400 generations, with a
-recording of about 0.7 GB (§10.4, §10.9); `train`'s start line estimates the run's hours. The generator's own default without a mix (`scenarios.training_set`) is still M1's 32 (8 easy,
-24 full), which M1's measurements in this document refer to. Easy scenarios give a clueless team something to stumble into (agents start near the box, close enough to see it, §10.1); the full ones keep evolution pointed at the real task.
+recording of about 0.7 GB (§10.4, §10.9); `train`'s start line estimates the run's hours. The generator's own default without a
+mix (`scenarios.training_set`) is the same 4 + 28 since R1 (M1's measurements in this document used 8 easy and 24 full). Easy scenarios give a clueless team something to stumble into (agents start near the box, close enough to see it, §10.1); the full ones keep evolution pointed at the real task.
 
 ### 4.3 Held-out sets
 
-**Fresh layouts never seen in training, at full difficulty**, evaluated after a run with `auxein.driver.evaluate_held_out` (or every few generations for the early stop, §6): the evidence for the "deployment to unseen situations" claim. 64 scenarios by default (ids `held-0000`...), made by the run's generator version (§2.2), generated from a seed and a **stream name** of their own, so that they are disjoint from the training set by construction, even with the same seed; `check_disjoint` verifies that no layout repeats. The strategy never sees them.
+**Fresh layouts never seen in training, at full difficulty**, evaluated at the end of a run with `auxein.driver.evaluate_held_out` (`held_out.csv`, §6.1): the evidence for the "deployment to unseen situations" claim. 64 scenarios by default (ids `held-0000`...), from **`scenarios.seed + 1`** (since R1; a separate `held_out_seed` before) on a **stream name** of their own, so that they are disjoint from the training set by construction, even with the same seed; `check_disjoint` verifies that no layout repeats. The strategy never sees them. `deploy` draws its scenarios on the same stream from another seed, fresh by default (§7.2), so deploying on the held-out seed repeats the held-out evaluation.
 
 ### 4.4 Episodes and delivery
 
@@ -318,132 +316,96 @@ with `Weights(progress=1.0, delivery=2.0, time=1.0, approach=0.1, progress_floor
 ## 6. Training
 
 - **Strategy.** **`GeneticAlgorithm`** is the main strategy: a population evolving is the clearest story. **`PycmaStrategy`** (CMA-ES) on the same setup is a comparison run (M4); §10.6 notes its limits at 1,474 dimensions.
-- **Driver settings.** Generation delivery, deterministic mode, recording on (`run_dir`), progress printed with `auxein.callbacks.print_progress`. **The run stops on its budget only** (decided at M2a): no held-out evaluation and no early stop during the run (reading the recording of a running run for it is unchecked, §10.5); held-out results come after the run, in M3's report.
+- **Driver settings.** Generation delivery, deterministic mode, recording on, progress printed with `auxein.callbacks.print_progress`, a checkpoint every 10 generations. **The run stops on its number of generations only** (decided at M2a): no held-out evaluation and no early stop during the run (reading the recording of a running run for it is unchecked, §10.5). The held-out evaluation comes at the end of the run (§6.1).
 - **The evaluator.** `EpisodeEvaluator(policy, world, training_set, aggregator)`, which takes Auxein's batched path because the world has `run_batch`, `MLPPolicy` has `decode_batch` and the GA's batches are arrays.
-- **Sizes** (decided at M2a, from the owner's Metal probe, §10.3): **40 agents, a population of 100** (`GeneticAlgorithm(population_size=100, offspring_size=100)`), **32 training scenarios** (4 easy, 28 full, fixed for the run; 16, with 12 full, until M2b, §4.2), 900 steps. 56 s per generation on Metal (29 s with M2a's 16 scenarios).
+- **Sizes** (decided at M2a, from the owner's Metal probe, §10.3): **40 agents, a population of 100** (100 children per generation), **32 training scenarios** (4 easy, 28 full, fixed for the run; 16, with 12 full, until M2b, §4.2), 900 steps. 56 s per generation on Metal (29 s with M2a's 16 scenarios).
 - **Backend.** **torch float32 on Metal** (`mps`) by default; torch on the CPU when Metal is not available, with a message saying so (and several times slower). numpy stays the backend of tests.
-- **A command-line tool** trains from a TOML config, reproducible from its seed: the config fixes the world, the team, the sensing, the network, the scenario sets, the fitness weights, the strategy, the budget and the backend, and is copied into the run directory.
+- **One command** trains from a TOML config, reproducible from its seed: `uv run --extra torch scenarios box-pushing train CONFIG` (§6.1).
 
-### 6.1 Training as built (M2a)
+### 6.1 Training as built (R1)
 
-**The config** (`config.TrainingConfig`, TOML through `tomllib`) is the run's definition. Sections: `[world.<section>]` (any field of `WorldParams`, e.g. `[world.simulation] max_steps`), `[sensing]`, `[team] agents`, `[brain] hidden, scale` (`MLPPolicy.space(scale)`), `[scenarios] easy, full, seed, held_out, held_out_seed, generator`, `[fitness]` (the weights), `[strategy] population, offspring, crossover_probability, tournament_size, initial_step`, `[budget] generations`, `[run] seed, backend, device, precision, checkpoint_every` (generations), and a top-level `name` (default: the file's name). Every field has this document's default, so a config lists only what it changes, **except `scenarios.generator`** (M2b): its default is 2 for a config built in code, but **a config file without it means 1**, the generator before M2b, because every run recorded before M2b has a `config.toml` without it and must rebuild the scenarios it was trained and judged on (§2.2); the presets write `generator = 2`, and `train` prints the version on its start line; unknown keys and bad values are errors naming the key (`unknown key 'strategy.populaton'`, `team.agents must be an integer, got 'forty'`). The budget in generations is `population + (generations − 1) × offspring` evaluations: the initial population is the first generation.
+**The config** (`config.TrainingConfig`, TOML through `tomllib`) is the run's definition, and since R1 it holds **only what an experiment varies**. A config lists only what it changes; the run's `config.toml` is written with every default filled in, so it defines the run on its own. Unknown keys and bad values are errors naming the key (`unknown key 'evolution.populaton'`, `team.agents must be an integer, got 'forty'`); **a key that is not configurable** (any removed at R1) is an error saying what to do instead (`'strategy' is not a config key: use [evolution] population …`).
 
-**Presets** (`configs/`): `smoke.toml` (10 agents, population 10, 4 scenarios, 200 steps, 3 generations, numpy float64: a few seconds; used by the tests), `pilot.toml` (the full sizes, 25 generations: the start of the learning curve) and `full.toml` (the full sizes, 400 generations, a checkpoint every 10: the overnight run, about 6.2 hours on Metal since M2b, 3.2 hours before). All three write `generator = 2` and, from M2b, 4 easy + 28 full training scenarios (smoke: 2 + 2).
+| Key | Default | Meaning |
+|---|---|---|
+| `name` | the file's name | the run directory's prefix |
+| `[world.arena]`, `[world.box]`, `[world.friction]`, `[world.agent]`, `[world.contact]`, `[world.simulation]` | §2 | every physics parameter of `WorldParams`, e.g. `[world.simulation] max_steps = 900`; validated as the world is built (§2.6's stability check included) |
+| `[sensing] range` | 5.0 | the sensing range `r`; the rays reach as far. 12 rays and 8 teammate sectors are fixed in code: they set the observation's size, so the shape of every brain |
+| `[team] agents` | 40 | the team size |
+| `[brain] hidden` | `[32]` | the hidden layers' widths (`tanh`); the genome space is `MLPPolicy.space(1.0)` |
+| `[scenarios] easy`, `full` | 4, 28 | the training set, easy then full, fixed for the run |
+| `[scenarios] held_out` | 64 | the held-out set's size, full difficulty |
+| `[scenarios] seed` | 1 | the training set's seed; **the held-out seed is `seed + 1`**, its layouts drawn on a stream of their own, so the two sets cannot share a layout whatever the seeds (`check_disjoint` checks it at the end of a run) |
+| `[fitness] progress`, `delivery`, `time`, `approach` | 1.0, 2.0, 1.0, 0.1 | the score's weights (§5.1); the progress floor stays −1 |
+| `[evolution] population` | 100 | parents, and children per generation |
+| `[evolution] generations` | 400 | the run's length; the only thing a resume may change |
+| `[run] seed` | 1 | the run's seed |
+| `[run] backend`, `device`, `precision` | `torch`, `mps`, `float32` | where it computes (`numpy` runs on `cpu`) |
 
-**The run directory** (`runs/<name>-<timestamp>/` by default, ignored by git): `config.toml` (the effective config, every default filled in), `progress.csv`, `clips/` (from `watch`) and **`recording/`, Auxein's run directory** (event log, metadata, checkpoints; `auxein.open_run(".../recording")`). Auxein's recording has a directory of its own because Auxein starts a run only in an empty or new directory, and so that the two never mix.
+**Fixed in code** (`train.py`): tournament size 2, crossover probability 1.0 (every child an intermediate recombination of two parents), self-adaptive mutation from an initial step of 0.1, and a checkpoint every 10 generations.
 
-**Commands:**
+**Presets** (`configs/`), each listing what differs from the defaults and the sizes, so it reads on its own: `smoke.toml` (10 agents, population 10, 2 + 2 scenarios, 4 held out, 200 steps, 3 generations, numpy float64: seconds; the tests' run), `pilot.toml` (the full sizes, 25 generations: the start of the learning curve, about 25 minutes on Metal) and `full.toml` (the full sizes, 400 generations: about 6.2 hours).
 
-- **`box-pushing train CONFIG [--run-dir DIR]`** builds everything from the config (the training set, the world, the brain, the aggregator, `EpisodeEvaluator`, `GeneticAlgorithm`) and runs Auxein with recording on, deterministic mode, generation delivery and a checkpoint every `run.checkpoint_every` generations (and Auxein's every 5 minutes). It prints one line at the start (backend, device, sizes, and the simulation's seconds per generation, measured on two steps; a generation takes about a quarter more, §10.7), a progress line per generation (`print_progress`), and a summary at the end (the best score, its success rate on the training set, where the run is).
-- **`progress.csv`** is rewritten after every generation **from the recording**: Auxein's `generation_history()` (generation, evaluations, the best score so far, the generation's score best, mean, median and worst) plus, per generation, the means of the descriptors over its candidates (`success_rate_mean`, `progress_mean`, `approach_mean`, `max_pushers_mean`), the champion's descriptors (`champion_*`) and the active seconds. Decision 6 asked for `ProgressHistory`; it is built from the recording instead, because `ProgressHistory` holds no descriptors and, after a resume, only the generations since the last checkpoint (a resume replays from there), while the recording has the whole run. It can be charted while the run goes on.
-- **Ctrl-C stops a run resumably**, after the generation in progress, with a checkpoint (a second Ctrl-C stops at once, losing that generation). With Auxein `v0.3.2` one Ctrl-C did not reach a batched run (an Auxein bug, fixed in `v0.3.3`, §10.5).
-- **`box-pushing train --resume DIR [--generations N] [--config CONFIG]`** continues a run from its recording and its `config.toml`: after Ctrl-C or a crash (Auxein replays from the last checkpoint; deterministic mode, so the result is the run that never stopped), or with another budget (`--generations`: more to extend it, fewer to end it sooner, never fewer than it has). **Only the budget may change**: a `--config` that differs in anything else is refused, listing every difference (`fitness.approach: recorded 0.1, given 0.2`), and so is an edited `config.toml` in the run directory, by Auxein, whose comparison of the evaluator sees the world's parameters and the score's weights. The new budget is written to the run's `config.toml`.
-- **`box-pushing watch DIR [--generation K] [--scenarios train:0 held:1 ...] [--overlay]`** renders the best brain up to generation `K` (`RunReader.best_up_to(K)`, the last told generation by default) on showcase scenarios (by default the first easy and the first full training scenario and the first two held-out ones), **with the run's backend, precision and device** read from the recording (§7), through the environment's step loop (M1b's brains rendering), into `DIR/clips/best-gen<K>.mp4`, and prints each scenario's measurements. It reads the recording read-only (SQLite in WAL mode), so **it is safe while the run trains**: a test watches a run that another process is training. On the training scenarios the clip's measurements are the recorded ones (numpy float64, a test). It is a quick look, not M3's milestone clips.
-- **The checks it passes** (`tests/box_pushing/train_test.py`, on numpy, CI-sized): `smoke.toml` trains, records, and writes `config.toml` and `progress.csv`; a run interrupted after its second generation (Ctrl-C as a callback would raise it) and resumed has the event log (events, candidates and genomes, lineage, evaluations, episodes) and the best of the run that was never stopped; a run of two generations extended to three has the event log of a three-generation run; a resume with a changed fitness weight or team size is refused, and one with an edited weight in the run's `config.toml` is refused by Auxein; a new run never overwrites one; `watch` renders a smoke run's best with its recorded measurements; and one Ctrl-C stops a run that another process is training, while `watch` reads it, and the run resumes.
+**`scenarios box-pushing train CONFIG [--run-dir DIR]`** builds everything from the config (the training set, the world, the brain, the aggregator, `EpisodeEvaluator`, `GeneticAlgorithm`) and runs Auxein. It prints a start line (backend, sizes, the simulation's measured seconds per generation, the run's expected time at 1.4 times that, and the minutes the held-out judging at the end will take), a progress line per generation, and end lines saying where everything is and how to deploy the final brain. **Training only, no video.** The run directory, `runs/<name>-<timestamp>/` (ignored by git):
+
+- **`config.toml`**: the effective config.
+- **`recording/`**: Auxein's run directory (event log, metadata, checkpoints; `auxein.open_run`), a directory of its own because Auxein starts a run only in an empty or new directory.
+- **`progress.csv`**, rewritten after every generation from the recording: Auxein's `generation_history()` (generation, evaluations, the best score so far, the generation's score best, mean, median and worst), the means of the descriptors over the generation's candidates, the best-so-far's descriptors and the active seconds. Built from the recording rather than from the callbacks, so that a resumed run's file covers the whole run.
+- **`brains/`**: **`gen-<k>.safetensors`** for every **snapshot** (§7), written when its generation is reached, and **`final.safetensors`**, the run's best, written at the end **and on interruption** (Ctrl-C or a crash after the first generation), so a stopped run always has a usable brain.
+- **`held_out.csv`**: at the end, every snapshot brain (and the last generation's) judged on the run's held-out set through Auxein's `evaluate_held_out` (`write=False`: nothing is written into the recording), with its training results from the recording: per snapshot, training score and success (all, easy, full), held-out episodes, deliveries, success, progress, `max_pushers`, median delivery step, and **the generalisation gap** (full-training success minus held-out success). Minutes on Metal; the start line says how many.
+- **`charts/`**: **fitness** (the best so far, the generation's mean and median), **delivery** (the best-so-far's training success and the generation's mean), **cooperation** (`max_pushers`) over generations, from `progress.csv`, and **generalisation**, held-out against full-training success per snapshot, from `held_out.csv`; PNG (200 dpi) and SVG in the theme (§7).
+
+**`scenarios box-pushing train --resume RUN [--generations N]`** continues a run from its recording and its `config.toml`: after Ctrl-C or a crash (Auxein replays from the last checkpoint; deterministic mode, so the result is the run that never stopped: the same event log, the same brains, the same `held_out.csv`), or with another number of generations (more to extend it, fewer to end it sooner, never fewer than it has). Nothing else can change: an edited `config.toml` is refused by Auxein, whose comparison of the evaluator sees the world's parameters and the score's weights. The new number is written to the run's `config.toml`, and the brains, `held_out.csv` and charts are refreshed at the end. **Ctrl-C stops a run resumably**, after the generation in progress (a second Ctrl-C stops at once).
+
+**The checks** (`tests/box_pushing/train_test.py`, numpy, the smoke preset): a run writes `config.toml`, `progress.csv`, `held_out.csv` (equal to Auxein's evaluation of its snapshots), `brains/gen-*.safetensors` for its snapshots and `final.safetensors` (the run's best), and the four charts; an interrupted run has `final.safetensors` and resumes to the uninterrupted run's event log, brains and `held_out.csv`; an extended run refreshes its brains, charts and `held_out.csv`; fewer generations than a run has and an edited weight are refused; a new run never overwrites one; one Ctrl-C through the `scenarios` command stops a run in another process with exit code 130, leaving its final brain, and it resumes. **And the same numbers as before R1** (decision 9): a smoke run pinned from `main` before R1 (`tests/box_pushing/data/pre_r1_smoke.json`), trained again, has the same evaluations (every number to 9 significant digits) and final best on every platform, and the **same event log bit for bit** on the machine type it was pinned on (macOS arm64, the owner's). Elsewhere a float's last bit differs (the platform's libm, and the SIMD kernels numpy picks for the CPU: two Linux x86-64 machines gave two digests), so CI checks the 9-digit digest and the final best.
 
 ---
 
-## 7. Videos and charts
+## 7. Brains, deployment and videos
 
-- **Rendered offline from the recording**, never during training (except an optional progress clip, rendered from a callback at a chosen interval, which blocks the run while it renders). Auxein's reader gives the best genome at any generation (`RunReader.best_up_to(k)`, `champions(every=n)`), so any generation can be rendered after the fact.
-- **The same backend and precision as the run.** Penalty contacts with many bodies are chaotic, so a float32 champion replayed in float64 (or on another device) may behave visibly differently and even fail to deliver. Clips are rendered with the run's backend, precision and device, read from the recording's metadata, so that they show what was scored.
-- **Default milestones:** log-spaced generations (1, 2, 5, 10, 20, 50, 100, 200, 500, …, and the last), **skipping a milestone whose champion is unchanged** from the previous one (the same candidate id): about 8–10 clips for a run of a few hundred generations. Any generation, or every `n`th, on request. The log spacing is computed here, with one `best_up_to(k)` per milestone, since `champions(every=n)` is arithmetic.
-- **Showcase scenarios.** Each clip shows one or more fixed showcase scenarios, from the training set and from a held-out set, **the same across milestones** so that they can be compared.
-- **A montage:** the milestone clips in sequence or side by side, with the generation number and a small fitness-over-generations curve with a moving marker.
-- **Look and feel** (decided at M1a, `common/theme.py`): every video, gallery and chart shares one theme, **monochrome silver on near-black**, with no accent colour.
+Since R1, **videos come only from `deploy`, charts only from `train`** (§6.1), and what connects them is a brain file.
+
+### 7.1 Brains as files
+
+A run saves its brains as **`.safetensors`** files (the `safetensors` package's numpy API; `common/brains.py` for what is generic, `box_pushing/brain.py` for the scenario's metadata and checks), so that a brain is a small file that can be deployed, shared and read without the run that made it.
+
+- **Tensors:** the network's layers, `layers.<i>.weight` `(out, in)` and `layers.<i>.bias` `(out,)`, from the input side, **in the run's precision**: exactly the `MLPPolicy` genome, per layer its weights row by row then its biases, so loading rebuilds the genome **bit for bit** (a float32 run's genomes are float32 values; saving refuses a genome its precision cannot hold). Any safetensors reader sees a plain network. A brain of the default sizes is about 8 KB in float32.
+- **Metadata** (safetensors' string-to-string header, each value JSON):
+  - `format`: `"auxein-scenarios/box-pushing/brain/1"`, and `scenario`: `"box-pushing"`;
+  - `brain`: the spec (observation size 43, hidden widths, 2 outputs, `tanh` activation and output);
+  - `observation_layout`: the observation's parts in order, `[[name, size], …]` (`sensors.observation_layout`): a brain reads its inputs by position;
+  - `sensing` (range, rays, sectors), `world` (every `WorldParams` section) and `team` (agents): what it was trained in, so it runs in its own world wherever it is deployed;
+  - `provenance`: the run (its config's name, its directory, its seed, its scenario sets with both seeds), the generation and candidate, whether it is the final brain, its training score and success, the fitness weights, the Auxein and scenarios versions, the scenarios commit (with `+dirty` for uncommitted changes, when run from a checkout) and the creation time.
+- **Loading refuses** a file whose format tag is not this code's, or whose observation layout differs from the code's, with a message saying which, before anything runs.
+- **Snapshots** (`snapshots.py`, what M3 called milestones): log-spaced generations (1, 2, 5, 10, 20, 50, 100, 200, 500, …) and the last, a snapshot skipped when its champion is the previous one's candidate, one `RunReader.best_up_to(k)` each (Auxein's `champions(every=n)` is arithmetic). A run of 400 generations has up to nine: 1, 2, 5, 10, 20, 50, 100, 200 and 400 (`final`). The decision to save `gen-<k>` reads only the recording, so a resumed run saves the same files as one never stopped.
+
+### 7.2 Deploying brains (R1)
+
+**`scenarios box-pushing deploy BRAIN... [options]`** (`deploy.py`) runs trained brains on scenarios they have not seen. It takes no TOML: its options are its whole interface.
+
+- **The scenarios:** `--scenarios N` (64) layouts of `--difficulty full|easy` (full) from `--seed S`, drawn on the held-out stream for the brain's world and team. **By default the seed is fresh**: random, and not the training or held-out seed of any brain given, so the scenarios are new to every brain; it is recorded, so the deployment can be repeated. `--seed` may name any seed, the held-out one included: deploying a run's final brain on its held-out seed repeats the run's held-out evaluation, episode for episode (decision 9, a test).
+- **Each brain runs in its own world**, the world, sensing and team size of its metadata; **`--agents N`** changes the team size, the brain unchanged (every agent runs it on its own senses). Brains from different worlds get different layouts (a layout depends on the arena, the box, the agents' size and the team) and baselines of their own.
+- **The baselines on the same scenarios:** 20 **random brains** sampled from the brain's genome space with seed 0 (what an untrained team does, as a run's first generation) and the **senses-only controller** (§10.1: what these senses allow a hand-written memoryless policy).
+- **Where it computes:** `--backend torch|numpy`, `--device`, `--precision`; by default torch float32 on the best available device (Metal, CUDA, then the CPU), numpy float64 when torch is not installed. Penalty contacts with many bodies are chaotic, so a float32 brain replayed in float64 or on another device may behave a little differently: `deploy.toml` records where it ran. **Brains of the same world, sensing, team and network run in one batch** (three brains on 64 scenarios with the video: about 2.5 minutes on Metal), so on a GPU a brain's float32 numbers depend slightly on which brains it is deployed with; on numpy they do not.
+- **Output**, `deployments/<name>-<timestamp>/` (`name`: the first brain's run's config name; `--out DIR` instead; ignored by git):
+  - `deploy.toml`: the effective options (the seed among them) and each brain's path, label, team size and provenance;
+  - `results.csv`: one row per brain (or baseline member: `random brains 1` … `20`) per scenario: delivered, steps, progress (clipped at the fitness's floor, as the score), `max_pushers`, the box's starting distance to the target, the obstacles, the score with the brain's own weights;
+  - `summary.md`: per brain and baseline, deliveries and success, mean progress, mean `max_pushers`, the median delivery step, and deliveries by the box's starting distance (6–8, 8–10, 10–12 units);
+  - **`deployment.mp4`** (unless `--no-video`): **a row of panels per brain, on the same scenarios**: the first `--video-scenarios K` (2) of the set, not chosen for how they went. Each panel is captioned with the brain (its run and generation, or `final`), the scenario, and how its episode ended ("delivered at step k" or "not delivered · progress p"); a panel whose episode has ended holds its last state while the others play on. **Deploying a run's `gen-0001`, a middle snapshot and `final` together gives the before-and-after grid in one command**: this replaces M3's milestone clips and montages, which are removed.
+
+### 7.3 Look and feel
+
+- **One theme** (decided at M1a, `common/theme.py`) for every video and chart, **monochrome silver on near-black**, with no accent colour.
   - **State is shown with brightness, never with hue.** The box is outlined in steel at rest, filled bright white while moving, silver once delivered, when the target zone fills. Agents touching the box are bright white.
-  - **Agents** are silver chevrons along their heading, inside a faint outline of their true disc, and agents close to each other are joined by faint lines (in M1b these can show which teammates each agent senses).
+  - **Agents** are silver chevrons along their heading, inside a faint outline of their true disc, and agents close to each other are joined by faint lines.
   - **Type:** a small tracked uppercase label, a light headline (Inter Tight Light) and a muted lead (Inter Light) above the panels; small tracked captions in each panel. Inter and Inter Tight are bundled (`common/fonts/`, SIL Open Font License), so videos look the same on every machine, CI included.
   - **Depth:** the floor is lit faintly at its centre and dithered so that the shallow gradient does not band.
   - **No branding** in the videos.
-- **The sensing overlay** (M1b, `render.py`), optional per clip, for one or a few chosen agents, recorded by the same step loop that scores an episode (`WatchRecorder`), in the same monochrome theme: the watched agent bright white inside its **sensing circle** (dashed, with ticks at the sector boundaries); its **rays**, faint lines ending in a dot where they hit, **bright white on the box** and steel on a wall or an obstacle (no dot when nothing is in range), rays on the box drawn brighter; the **box cue**, a line to the box's centre while the box is in range; and the **teammates it senses**, joined to it by lines as bright as their weight `1 − d / r`: the faint links of M1a, now meaning "sensed", replacing the proximity links while the overlay is on. The overlay is clipped to the arena.
-- **Panels are cells**, a candidate on a scenario: the demos show one candidate on several scenarios, the brains clip several candidates (random brains) on one scenario.
-- **Format:** MP4, drawn with matplotlib and encoded by ffmpeg. ffmpeg comes from the `imageio-ffmpeg` wheel, which ships a static binary for macOS and Linux; matplotlib's `FFMpegWriter` is pointed at it, so no system ffmpeg is needed and `uv sync` alone is enough on a Mac and in CI.
-- **Charts:** fitness over generations from `RunReader.generation_history()` (best, mean and median per generation), and the success rate and `max_pushers` from the recorded descriptors.
+- **Rendered offline** from a trajectory recorded by the same step loop that scores an episode (`BoxPushingWorld.watch`), so a video shows exactly what the physics computed. Each panel is its own trajectory's cell (`render.Panel`), so brains of different worlds and team sizes share a video.
+- **Format:** MP4 (H.264, yuv420p), drawn with matplotlib and encoded by ffmpeg from the `imageio-ffmpeg` wheel, so no system ffmpeg is needed and `uv sync` alone is enough on a Mac and in CI. Charts: PNG and SVG, series told apart by brightness and dash, labelled at their ends (`common/charts.py`).
+- **The checks** (`deploy_test.py`, `brain_test.py`, `render_test.py`): one brain and three brains deployed, a fresh seed disjoint from the training and held-out sets, `--agents` changing the team, the baselines present, the three files correct and parsing, the video's panels and captions (the text drawn in a few frames, `common.rendering.drawn_text`), `--no-video`, and deployment on the held-out seed equal to `evaluate_held_out`; brains round-tripping bit for bit in float32 and float64, their metadata, the refusals, and their size.
 
-### 7.1 Showing a run as built (M3)
-
-Four commands turn a trained run into the demo's material, and a fifth runs them all. **Everything is rebuilt from the run
-directory** (its `config.toml` rebuilds the sets, the world, the brain and the aggregator; its recording gives the champions)
-**and written under it, never into the recording**: `DIR/report/`, `DIR/clips/milestones/`, `DIR/clips/montage-<layout>.mp4`,
-`DIR/charts/`. Clips and the report replay brains **with the run's backend, precision and device** (`train.replay_backend`:
-torch on the CPU, with a note, if the run's GPU is not available here).
-
-- **Milestones** (`milestones.py`), one module that every command uses: log-spaced generations (1, 2, 5, 10, 20, 50, 100,
-  200, 500, …) and the last, a milestone skipped when its champion is the previous one's candidate, one `best_up_to(k)` each;
-  `--generations 1,50,400` overrides the list (sorted, each counted once, the same skipping). The overnight run has nine:
-  1, 2, 5, 10, 20, 50, 100, 200, 400.
-- **`box-pushing report DIR [--generations ...] [--exploit TEXT]`** (`report.py`): the champion of every milestone through
-  Auxein's `evaluate_held_out` (`candidates=[ids]`, `write=False`, an `EpisodeEvaluator` rebuilt from the run with the held-out
-  set) on the run's **held-out set** (`scenarios.held_out` full layouts from `held_out_seed`; `check_disjoint` against the
-  training set); two **baselines** on both sets through the same world: 20 **random brains** sampled from
-  `MLPPolicy.space(scale)` with seed 0 (as the GA's first generation was; pooled over the 20) and the **senses-only
-  controller** (§10.1). Per subject: the training results (from the recording for champions; all, easy and full), the held-out
-  results (success rate, mean progress, mean `max_pushers`, the median delivery step of the delivered) and **the generalisation
-  gap**, full-training success minus held-out success (both full difficulty). Output under `DIR/report/`: `report.md` (the
-  table and a paragraph per finding: unseen layouts, the gap by milestone, the baselines, success by box–target distance,
-  scenarios never moved, failures, and the recommendation), `held_out.csv` (one row per subject), `held_out_episodes.csv`
-  (one row per subject and held-out scenario) and `held_out.json` (Auxein's `HeldOutReport.to_json()`; Auxein's `write=`
-  writes only into the run directory, here the recording, so the scenario writes the file: §10.5). Deterministic: the same
-  command twice writes the same files (a test). On a GPU the numbers depend slightly on the batch's shape (§10.7), so a clip
-  of one champion can differ a little from the report, which evaluates all champions at once; the report's numbers are the
-  statistics.
-- **The recommendation** (decision 7, `report.recommend`), from the final champion's held-out success and its gap, in this
-  order: an **exploit** seen in the clips (given with `--exploit`) is fixed first (M2b, physics or fitness); **at least half**
-  of the held-out scenarios delivered: it generalises (M4); a **gap above 0.25**: it learned the maps (M2b, more full training
-  scenarios); otherwise, below half without a large gap, **the limit is the task as set, not overfitting** (M2b looks at what
-  stops it, the step limit and the search, before more scenarios): a fourth case decision 7 did not name, added here. A gap
-  within 0.03 of the threshold is called borderline, and the report says the other case is indicated too.
-- **`box-pushing milestones DIR [--generations ...] [--showcase ...] [--overlay]`**: one clip per milestone, its champion on
-  **the same showcase scenarios at every milestone** (default: the first easy and the first full training scenario and the
-  first two held-out ones; not chosen for how they went), into `DIR/clips/milestones/gen-<k>.mp4` (`k` zero-padded to four
-  digits, so the files sort). The champions are replayed **in one batch** (`train.replay`, the path `watch` now uses too), and
-  each clip ends when its own episodes have. The header names the generation, the champion's score and its training
-  deliveries; **every panel's footer says plainly what it is** ("training scenario" or "held-out: never seen in training")
-  and how its episode ended ("delivered at step k", or "not delivered · progress p").
-- **`box-pushing montage DIR [--layout sequence|grid] [--size 1920x1080] [--generations ...] [--showcase ...]`**, H.264 MP4 at
-  the given size, into `DIR/clips/montage-<layout>.mp4`. **`sequence`** (default): the milestones one after another, each
-  opened by a 1.5 s title card ("Milestone 3 of 9", "Generation 10", its score and deliveries), the champion on the showcase
-  scenarios, and a **fitness-over-generations inset** (the best so far, the generation's mean faint, the milestones as quiet
-  dots) whose marker moves to the milestone shown; simulated time 4× real time. **`grid`**: three or four milestones (the
-  first, one or two between, the last) **side by side on one scenario, simultaneously**, by default `held:0` (the first
-  held-out scenario, labelled as such), with the inset marking them; 3×. Drawn in one pass from the replayed trajectories
-  rather than by stitching the milestone clips, so the title cards and the inset need no second encoding. The shared pieces
-  are in `common/rendering.py`: `TitleCard`, `CurveInset`, `parse_size`, and `drawn_text`, the text a frame shows, which the
-  tests read instead of pixels.
-- **`box-pushing charts DIR`**, PNG (200 dpi) and SVG in the theme (`common/charts.py`: series told apart by brightness and
-  dash, labelled at their ends, no hue): **fitness** (the best so far, the generation's mean and median), **delivery** (the
-  champion's training success rate and the generation's mean), **cooperation** (`max_pushers`: the champion's and the
-  generation's mean) over generations, from `progress.csv` (rebuilt from the recording if missing, without writing it), and
-  **generalisation**: full-training against held-out success per milestone, from the report; without a report the chart says
-  so ("No held-out report yet: run box-pushing report DIR first").
-- **Showcase scenarios aren't cherry-picked by default.** `--showcase` takes `train:<i>`, `held:<i>`, and **`best-held` /
-  `worst-held`**: the final champion's best and worst held-out scenarios, ranked by progress with a delivery first (a
-  delivery ends at the target zone's edge, so its progress is below 1 and could tie with a near miss), from the report's
-  `held_out_episodes.csv` or evaluated on the spot. A website can show both; the report always gives the full numbers.
-- **`box-pushing showcase DIR [--generations ...] [--showcase ...] [--exploit TEXT] [--size ...]`** runs the report, the
-  milestone clips, both montages and the charts, in that order (the generalisation chart needs the report), timing each and
-  printing where everything is.
-- **`box-pushing compare DIR... [--held-out DIR_OR_CONFIG] [--milestones] [--out DIR]`** (M2b, `compare.py`): runs on **one
-  common held-out set**, since each run's own report uses its own set and runs of different generator versions (or, in M4,
-  strategies) do not compare otherwise. The common set is a reference's held-out set: a run directory or a config file
-  (`--held-out`), by default **the newest run** (by the recording's start). **Each champion keeps its own world, sensing,
-  brain and aggregator**, rebuilt from its own config through the report's `champions_on`; only the scenarios are shared, and
-  a run whose layouts cannot be the reference's (another team size, arena, box or agent size) is refused with the reason, as
-  is one whose training set shares a layout with the common set. The final champion of each run, or every milestone's with
-  `--milestones`, and the report's two baselines in the reference's world. Output under the reference run's `report/` (the
-  newest run's when the reference is a config file) or `--out`: `compare.md` and `compare.csv`, per champion: success on the
-  common set, mean progress, mean `max_pushers`, the median delivery step, deliveries by the box's starting distance (6–8,
-  8–10, 10–12 units), and its own training success (easy and full). Deterministic, and nothing is written into a recording
-  (tests). **`box-pushing showcase DIR DIR...`** with several runs makes each run's showcase, then compares them on the
-  newest's held-out set.
-- **The checks** (`tests/box_pushing/milestones_test.py`, `report_test.py`, `showcase_test.py`, `tests/common/rendering_test.py`;
-  a smoke run on numpy, its 4 held-out scenarios): the log spacing, the last generation, skipped champions and the override;
-  every champion and both baselines evaluated, the training numbers equal to the recording's, the held-out ones to Auxein's,
-  the gap as defined, the recording byte-identical after the report, the same CSVs twice, the files present and parsing, each
-  case of the recommendation; a milestone clip and both montages render a few frames, with their labels, footers, title cards
-  and inset present in the text drawn; the four charts render, the generalisation chart without a report saying so;
-  `best-held` and `worst-held` agree with the report's per-scenario numbers, with or without a written report.
+M3's sensing overlay, galleries of layouts, demo scenes, `watch`, the held-out report's recommendation and `compare` were removed at R1 with their commands; their findings stay in §10.
 
 ---
 
@@ -452,53 +414,47 @@ torch on the CPU, with a note, if the run's GPU is not available here).
 ```
 auxein_scenarios/
   common/                 # helpers shared by the scenarios
+    cli.py                # the `scenarios` command: the registry of scenarios and their verbs; device resolution
+    runs.py               # output directories: runs/<name>-<timestamp>, deployments/<name>-<timestamp>
+    brains.py             # MLP genomes as safetensors files: layers as tensors, JSON metadata, the format check
     geometry.py           # 2-D geometry on batched arrays: frames, rectangle contacts, corners, ray casts
-    rendering.py          # matplotlib + ffmpeg: figures, frame timing, MP4 and PNG; title cards, curve insets (M3)
-    charts.py             # line charts in the theme, PNG and SVG (M3)
-    theme.py              # the look: colours, fonts, agent glyph, floor (§7)
+    rendering.py          # matplotlib + ffmpeg: figures, frame timing, MP4; the text a frame shows (for tests)
+    charts.py             # line charts in the theme, PNG and SVG
+    theme.py              # the look: colours, fonts, agent glyph, floor (§7.3)
     fonts/                # Inter and Inter Tight, with their licences
-    runs.py               # run directories and opening their recordings
-    cli.py                # config loading, backend choice, common options
   box_pushing/            # this scenario
+    cli.py                # its verbs: train and deploy
     world.py              # the physics core: layout, state, step, runner, trajectories (§2.10)
     contacts.py           # the penalty contact model, every pair (§2.6)
     environment.py        # BoxPushingWorld: run_batch, run_episode, the step loop, measurements, failures (§2.11); the brain
-    scripted.py           # scripted controllers (true state) for tests and demos; the senses-only controller (§10.1)
     sensors.py            # the observation layout and batched sensing (§3.8)
+    scripted.py           # scripted controllers (true state) for tests; the senses-only controller (§10.1)
     scenarios.py          # the scenario generator, difficulties, training and held-out sets (§4)
     fitness.py            # measurements to score: the episode score and the Aggregator (§5.3)
-    config.py             # the world's and the sensing parameters (§2, §3); the TOML training config (§6.1)
-    train.py              # building a run from its config; train, resume, watch; progress.csv (§6.1)
-    render.py             # clips, galleries and the sensing overlay; the montages' layouts (M3, §7.1)
-    milestones.py         # the milestone generations and their champions, for every M3 command (§7.1)
-    compare.py            # several runs' champions on one common held-out set (M2b, §7.1)
-    report.py             # the held-out report: champions and baselines on unseen scenarios, the recommendation (§7.1)
-    showcase.py           # milestone clips, the montage, the charts, and showcase (all of them) (§7.1)
-    demos.py              # the demo scenes; clips of random brains and of the senses-only controller (M1b)
-    cli.py                # box-pushing demo, scenarios, brains, senses, train, watch; report, milestones, montage, charts, showcase, compare
+    config.py             # the world's parameters (§2) and the TOML training config (§6.1)
+    train.py              # train and resume: the run, progress.csv, brains/, held_out.csv, charts/ (§6.1)
+    snapshots.py          # the snapshot generations and their champions (§7.1)
+    brain.py              # a box-pushing brain as a file: its metadata and checks (§7.1)
+    evaluation.py         # brains and baselines on scenarios: episodes, summaries, distance bands
+    charts.py             # the run's four charts (§6.1)
+    deploy.py             # deploy: brains on unseen scenarios, the baselines, results, summary, video (§7.2)
+    render.py             # the deployment video's panels (§7.3)
 configs/                  # training presets: smoke.toml, pilot.toml, full.toml (§6.1)
-benchmarks/               # scripts run by hand: physics_timing.py (M1a), probe.py (M1b, §10.3)
-tests/                    # smoke_test.py, common/, box_pushing/, benchmarks/
-runs/                     # run directories (ignored by git): config.toml, progress.csv, recording/, report/, clips/, charts/
+benchmarks/               # probe.py, run by hand (§10.3)
+tests/                    # smoke, cli and standalone tests; common/, box_pushing/, benchmarks/
+runs/                     # run directories (ignored by git): config.toml, progress.csv, held_out.csv, recording/, brains/, charts/
+deployments/              # deployments (ignored by git): deploy.toml, results.csv, summary.md, deployment.mp4
 docs/design/              # one design document per scenario
 docs/auxein-issues.md     # the log of Auxein bugs and requests found here
 ```
 
-`contacts.py` and `config.py` were added to the module list this design was given (decided, §10.6): the contact model is the largest and riskiest part of the physics, and the parameters are shared by the world, training, rendering and the held-out report. M1a added `scripted.py` (test and demo tools, not part of training) and `demos.py`. **M1b added `environment.py`**: the environment is more than the physics (sensing, the brain's loop, measurements, failures), and keeping it out of `world.py` keeps the physics core free of sensors and networks, as M1a built it.
+**One entry point for every scenario** (decided at R1): `scenarios <scenario> <verb> [options]`, a console script (`common/cli.py`) with a registry, `SCENARIOS`: each scenario registers its name, a line saying what it is, and the module whose `VERBS` it runs (`box_pushing/cli.py`: `train` and `deploy`). The parser is built from them, so `scenarios --help` lists the scenarios and `scenarios <scenario> --help` its verbs; an unknown scenario or verb is argparse's "invalid choice", listing the choices. A verb imports Auxein, torch and matplotlib only when it runs. What every verb shares lives in `common/`: the parser, the device resolution (`backend_from`), the output directories (`runs.timestamped`) and the brain files (`brains.py`).
 
-**Commands added at M1b** (clips to `out/`): `box-pushing brains [--count C] [--seed S] [--difficulty easy|full] [--agents N] [--overlay]` (random brains, one panel each, on one scenario: the clueless start), `box-pushing senses [...]` (the senses-only controller, one scenario per panel) and `box-pushing demo sensing` (one agent turning on the spot beside the box, an obstacle and moving teammates, with its overlay). Each prints every panel's measurements.
+**Code, tests and configs stand on their own** (decided at R1): no pointer to this document, to `CLAUDE.md`, to milestones or to their decisions, and no history; where a pointer carried a reason, the reason is stated in place. A test (`tests/standalone_test.py`) searches for them. History and decisions live here.
 
-**Added at M2a:** `fitness.py` and `train.py` filled in, the training config in `config.py`, the presets in `configs/`, and the commands `box-pushing train CONFIG`, `box-pushing train --resume DIR [--generations N]` and `box-pushing watch DIR` (§6.1). The common helpers listed for `common/runs.py` and `common/cli.py` stay empty: the run directory and the backend choice live in `train.py` until a second scenario needs them.
+**Adding a second scenario:** a subpackage `auxein_scenarios/<name>/` with a `cli.py` declaring its `VERBS`, an entry in `common.cli.SCENARIOS`, its design document `docs/design/<name>.md`, its tests `tests/<name>/`, and an entry in the README's scenario list. A helper starts in its scenario and moves to `common/` when a second scenario needs it, not before.
 
-**Added at M3:** `milestones.py`, `report.py` and `showcase.py`, `common/charts.py`, the montage pieces in
-`common/rendering.py`, and the commands `box-pushing report`, `milestones`, `montage`, `charts` and `showcase` (§7.1). `watch`
-now replays through `train.replay`, the path the milestone clips use, and its panels carry the same honest footers.
-
-**Added at M2b:** `compare.py` and the command `box-pushing compare` (§7.1), `showcase` taking several runs, generator
-versions in `scenarios.py` (§2.2) with `box-pushing scenarios --generator`, and `report.champions_on` / `baselines_on`, the
-report's evaluation for any held-out set.
-
-**Adding a second scenario:** a subpackage `auxein_scenarios/<name>/`, its design document `docs/design/<name>.md`, its tests `tests/<name>/`, and an entry in the README's scenario list. A helper starts in its scenario and moves to `common/` when a second scenario needs it, not before.
+**How the layout grew:** M1a added the physics core and `scripted.py`, M1b `environment.py` (keeping the physics core free of sensors and networks), M2a the fitness, the config and training, M3 the held-out report, clips, montages and charts, M2b generator versions and `compare`. **R1 pruned it to two verbs**: it removed the `box-pushing` script and its other commands (`demo`, `brains`, `senses`, `scenarios`, `watch`, `report`, `milestones`, `montage`, `charts`, `showcase`, `compare`) with `demos.py`, `report.py`, `showcase.py`, `compare.py`, the sensing overlay, the galleries, the montage pieces, generator version 1 and `benchmarks/physics_timing.py`; it added `brain.py`, `evaluation.py` (the report's evaluation of brains and baselines, kept), `charts.py`, `deploy.py`, `common/brains.py`, `common/cli.py` and `common/runs.py`. The package went from 6,881 to 5,386 lines.
 
 ---
 
@@ -506,28 +462,17 @@ report's evaluation for any held-out set.
 
 - **M0** (done): the design document and the repository scaffold.
 - **M1** is split in two, each ending with something to run and watch:
-  - **M1a** (done): the physics core (bodies, contacts, friction, integration, delivery), the scenario generator, and a viewer: MP4 demo clips driven by scripted controllers that use the true state, and PNG galleries of layouts (`uv run box-pushing demo all`, `uv run box-pushing scenarios`); physics tests (§2.10); a quick timing of the physics (§10.3).
-  - **M1b** (done): sensors and the observation layout (§3.8), the Auxein environment `BoxPushingWorld` with both paths, the layout cache, measurements and episode failures (§2.11, §5.2), random `MLPPolicy` brains and a senses-only controller acting on their own senses through the same step loop (`uv run box-pushing brains`, `box-pushing senses`), the sensing overlay (`--overlay`, `box-pushing demo sensing`), determinism end to end, and the full performance probe (§10.3).
+  - **M1a** (done): the physics core (bodies, contacts, friction, integration, delivery), the scenario generator, and a viewer: MP4 demo clips driven by scripted controllers that use the true state, and PNG galleries of layouts; physics tests (§2.10); a quick timing of the physics (§10.3).
+  - **M1b** (done): sensors and the observation layout (§3.8), the Auxein environment `BoxPushingWorld` with both paths, the layout cache, measurements and episode failures (§2.11, §5.2), random `MLPPolicy` brains and a senses-only controller acting on their own senses through the same step loop, the sensing overlay, determinism end to end, and the full performance probe (§10.3).
 - **M2** is split in three:
-  - **M2a** (done): the real fitness (§5.3), the TOML config and presets, `box-pushing train` with resume and extension, `box-pushing watch` for a run's current best (§6.1), the probe's fixes and the Metal numbers (§10.3), and a pilot run (§10.7).
+  - **M2a** (done): the real fitness (§5.3), the TOML config and presets, training with resume and extension, a viewer for a run's current best, the probe's fixes and the Metal numbers (§10.3), and a pilot run (§10.7).
   - **The owner's overnight run** (done) on the M4: `configs/full.toml`, 400 generations, 3.2 hours (§10.8).
-  - **M2b** (done, code): **better scenarios, nothing else**: the box clearance and generator versions (§2.2), 4 easy + 28
-    full training scenarios (§4.2), and `box-pushing compare` (§7.1); the bridge and the new pilot (§10.9). The report had
-    recommended looking first at what stops the team (the push, the search, the step limit); M2b instead changes only the
-    data, so that the next run says whether better data alone closes the gap; the levers for the push and the search are
-    kept for the round after.
-  - **The owner's second overnight run** (done): `configs/full.toml` (generator 2, 4 + 28), 400 generations, 6.2 hours
-    (§10.9). Better data closed the generalisation gap (+0.24 to +0.06) and ended the wall-hugging, but the champion delivers
-    41 % of its held-out scenarios, below half and below the first champion's 47 % on the same layouts; it stopped improving at
-    generation 288.
-  - **Next: the time-bonus weight for the push** (`w_t`, §5.1), not M4 yet: the second run's champion rings the box and pushes
-    at half the hand-written controller's speed, and delivers none of the long pushes (§10.9). One lever at a time; the
-    sensing range for the search is no longer indicated (every layout is reached). M4 once a run delivers at least half of
-    its held-out scenarios.
-- **M3** (done): milestones, the held-out report with two baselines and a recommendation, milestone clips with honest
-  labels, the sequence and grid montages, the charts, and `box-pushing showcase` (§7.1); run on the overnight run (§10.8).
-- **M4:** the CMA-ES comparison and polished clips for the website, once a retrained run generalises (at least half of the
-  held-out scenarios delivered; the second overnight run delivers 41 %, §10.9).
+  - **M2b** (done): **better scenarios, nothing else**: the box clearance and generator versions (§2.2), 4 easy + 28 full training scenarios (§4.2), and comparing runs on one held-out set; the bridge and the new pilot (§10.9). The report had recommended looking first at what stops the team (the push, the search, the step limit); M2b instead changes only the data, so that the next run says whether better data alone closes the gap.
+  - **The owner's second overnight run** (done): `configs/full.toml` (generator 2, 4 + 28), 400 generations, 6.2 hours (§10.9). Better data closed the generalisation gap (+0.24 to +0.06) and ended the wall-hugging, but the champion delivers 41 % of its held-out scenarios, below half and below the first champion's 47 % on the same layouts; it stopped improving at generation 288.
+- **M3** (done): milestones, the held-out report with two baselines and a recommendation, milestone clips with honest labels, the sequence and grid montages, the charts, and a command making them all (§7, as it was then); run on the overnight run (§10.8). R1 replaced its commands with `train`'s brains, held-out results and charts and `deploy`'s video.
+- **R1** (done): **pruned to two verbs before the next experiment**: `scenarios box-pushing train` (the run, its brains, its held-out results, its charts) and `scenarios box-pushing deploy` (brains on scenarios they have not seen: results and one video), brains as safetensors files, a smaller config, one generator, a shared entry point for every scenario, and code that stands on its own (§6.1, §7, §8). Behaviour unchanged: a run trains to the same numbers as before (decision 9, pinned from `main`).
+- **Next: the time-bonus weight for the push** (`[fitness] time`, `w_t`, §5.1), on the new CLI: a pilot with a larger weight, then a full run, its snapshot brains deployed together. Not M4 yet: the second run's champion rings the box and pushes at half the hand-written controller's speed, and delivers none of the long pushes (§10.9). One lever at a time; the sensing range for the search is no longer indicated (every layout is reached). The overnight runs predate R1 and are dropped, but their numbers stay comparable: a run with the default `scenarios.seed = 1` has held-out seed 2, the very 64 layouts both overnight champions were compared on (§10.9), so `deploy --seed 2` of a new brain is judged against the same 41 % and 47 %.
+- **M4:** the CMA-ES comparison and polished clips for the website, once a retrained run generalises (at least half of the held-out scenarios delivered; the second overnight run delivers 41 %, §10.9).
 
 ---
 
@@ -712,6 +657,8 @@ Details this design needed but was not first given. **Items 1–10 and 14 were d
 
 ### 10.8 Overnight run and held-out results (M3)
 
+*These runs predate R1: their directories are dropped, generator 1 is removed (§2.2), and the commands named below (`box-pushing report`, `showcase`, `watch`, …) are replaced by `scenarios box-pushing train` and `deploy` (§6.1, §7.2). Their numbers stay here as history.*
+
 **The run.** `configs/full.toml` on the owner's M4 Pro: 40 agents, a population of 100 with 100 children per generation, 4 easy
 and 12 full training scenarios, 900 steps, **400 generations**, torch float32 on Metal, seed 1 (`runs/full-20261017-201610`).
 **3.2 hours, 29.2 s per generation** (the pilot's rate), 40,000 evaluations, a **507 MB** recording (§10.4 estimated 0.4 GB).
@@ -792,6 +739,8 @@ the nine milestone clips **570 s** (about a minute each, 1036 × 1216 px), the s
 segments, 20 MB), the grid montage **64 s** (1920 × 1080, 3 MB), the charts under a second: about **18 minutes** in all.
 
 ### 10.9 Scenarios with clearance (M2b)
+
+*As §10.8: these runs predate R1, and their commands (`box-pushing compare`, `showcase`, …) are replaced by `train` and `deploy`. The held-out set they were compared on (generator 2, seed 2, 64 layouts) is the held-out set of any new run with the default `scenarios.seed = 1`, so `deploy --seed 2` judges a new brain on the same layouts.*
 
 M2b changes only the scenarios (§2.2, §4.2): fitness, sensing, the brain, the physics, the step limit and the GA settings are
 M2a's, so the second overnight run says what better data alone does.
@@ -931,3 +880,11 @@ is **the time-bonus weight for the push** (`w_t`, §5.1, `[fitness] time`), whic
 sensing range for the search is no longer indicated. The plateau from generation 288 says that a longer run of the same
 setup would not get there: the change has to be in what is rewarded.
 
+
+### 10.10 Open questions after R1
+
+- **"Milestone" names two things.** Decision 5 calls the brains a run saves at log-spaced generations *milestone champions*, and decision 12 forbids the word in code (it names this project's milestones). The code calls them **snapshots** (`snapshots.py`, `brains/gen-<k>.safetensors`); this document uses both until a reader is confused, then snapshots only.
+- **A run is reproducible bit for bit only on the platform it was trained on.** The layouts use `math.cos` and `math.sin`, whose last bit differs between macOS's libm and glibc, so a run trained on the Mac rebuilds its scenarios with other last bits on Linux: Auxein then refuses to resume it there (the scenario set's fingerprint is in the evaluator's description), rightly. Deploying a brain anywhere is unaffected (it rebuilds nothing of its run). Even on one OS the last bit can differ between machines, since numpy picks its SIMD kernels by CPU (AVX2, AVX-512): the pinned smoke run is exact on macOS arm64 only, to 9 digits everywhere (§6.1). A run is resumed on the machine that trained it.
+- **An interrupted run that is never resumed has no `held_out.csv` or charts**, only its `final.safetensors`: the held-out judging takes minutes, too long for Ctrl-C. Resuming it, even with no generation to add, writes them.
+- **On a GPU, a deployment's video can differ a little from its `results.csv`**: the video replays each brain on its first few scenarios in a smaller batch than the 64 judged, and float32 on Metal depends slightly on the batch's shape (§10.7). The video's captions are its own episodes' outcomes, so they never contradict what is shown; on numpy they match the CSV exactly.
+- **Brain files record the run's directory** (`provenance.run_dir`, an absolute path), useful to find the run again but a detail of the owner's machine in a file meant to be shared; the run's name is there too, so the path could be dropped.

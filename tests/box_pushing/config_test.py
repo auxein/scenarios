@@ -1,20 +1,24 @@
-"""The world's parameters: the design's defaults, the derived quantities computed in one place, and the checks at construction;
-and the training configuration (M2a): TOML, defaults, errors naming the key, the round trip, the presets."""
+"""The world's parameters: their defaults, the derived quantities computed in one place, and the checks at construction; and the
+training configuration: TOML, defaults, every key overriding, removed keys and errors naming the key, the round trip, the
+held-out seed, the presets."""
 
 import json
 import math
 import re
+import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from auxein_scenarios.box_pushing import scenarios, train
 from auxein_scenarios.box_pushing.config import (
+    REMOVED,
     STABILITY_LIMIT,
     ConfigError,
     SensingParams,
     TrainingConfig,
     WorldParams,
-    config_differences,
     dump_config,
     load_config,
     parse_config,
@@ -82,69 +86,119 @@ def test_unknown_sections_and_fields_are_refused() -> None:
         WorldParams().replace(box={"colour": 1.0})
 
 
-# --- the training configuration (M2a) ---
+# --- the training configuration ---
 
 CONFIGS = Path(__file__).resolve().parents[2] / "configs"
 
 
-def test_training_defaults_are_the_design_docs() -> None:
+def test_training_defaults() -> None:
     c = TrainingConfig()
-    assert (c.team.agents, c.strategy.population, c.strategy.offspring) == (40, 100, 100)
-    assert (c.scenarios.easy, c.scenarios.full, c.scenarios.held_out, c.scenarios.generator) == (4, 28, 64, 2)  # M2b's mix
-    assert c.max_steps == 900 and c.world == WorldParams() and c.sensing == SensingParams()
-    assert (c.fitness.progress, c.fitness.delivery, c.fitness.time, c.fitness.approach, c.fitness.progress_floor) == (
-        1.0,
-        2.0,
-        1.0,
-        0.1,
-        -1.0,
-    )
-    assert (c.brain.hidden, c.brain.scale) == ((32,), 1.0)
-    assert (c.run.backend, c.run.device, c.run.precision, c.run.checkpoint_every) == ("torch", "mps", "float32", 10)
-    assert c.budget.generations == 400 and c.evaluations == 100 + 399 * 100
+    assert (c.team.agents, c.brain.hidden, c.sensing) == (40, (32,), SensingParams(range=5.0))
+    assert (c.sensing.rays, c.sensing.sectors, c.sensing.reach) == (12, 8, 5.0)
+    assert (c.scenarios.easy, c.scenarios.full, c.scenarios.held_out, c.scenarios.seed, c.scenarios.held_out_seed) == (4, 28, 64, 1, 2)
+    assert (c.fitness.progress, c.fitness.delivery, c.fitness.time, c.fitness.approach) == (1.0, 2.0, 1.0, 0.1)
+    assert c.fitness.weights.progress_floor == -1.0
+    assert (c.evolution.population, c.evolution.generations) == (100, 400) and c.evaluations == 100 * 400
+    assert (c.run.seed, c.run.backend, c.run.device, c.run.precision) == (1, "torch", "mps", "float32")
+    assert c.max_steps == 900 and c.world == WorldParams()
 
 
-def test_a_partial_config_overrides_only_what_it_lists() -> None:
-    c = parse_config(
-        """
-        name = "try"
-        [world.friction]
-        k = 3
-        [world.simulation]
-        max_steps = 700
-        [strategy]
-        population = 20
-        [sensing]
-        ray_range = 8
-        """
-    )
-    default = TrainingConfig()
-    assert c.name == "try" and c.world.friction.k == 3 and c.max_steps == 700 and c.strategy.population == 20
-    assert c.sensing.reach == 8.0 and c.sensing.rays == default.sensing.rays
-    assert c.world.agent == default.world.agent and c.strategy.offspring == 100 and c.team == default.team
-    assert config_differences(default, c) == [
-        "scenarios.generator: recorded 2, given 1",  # a file without it means generator 1 (M2b): the one key that does not default
-        "sensing.ray_range: recorded None, given 8.0",
-        "strategy.population: recorded 100, given 20",
-        "world.friction.k: recorded 4, given 3",
-        "world.simulation.max_steps: recorded 900, given 700",
-    ]
+def _leaves(table: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in table.items():
+        if isinstance(value, dict):
+            out.update(_leaves(value, f"{prefix}{key}."))
+        else:
+            out[f"{prefix}{key}"] = value
+    return out
+
+
+KEYS = _leaves(tomllib.loads(dump_config(TrainingConfig())))
+SPECIAL: dict[str, tuple[str, Any]] = {
+    "name": ('name = "other"', "other"),
+    "run.backend": ('[run]\nbackend = "numpy"\ndevice = "cpu"', "numpy"),
+    "run.device": ('[run]\ndevice = "cpu"', "cpu"),
+    "run.precision": ('[run]\nprecision = "float64"', "float64"),
+    "brain.hidden": ("[brain]\nhidden = [16, 8]", [16, 8]),
+    "world.friction.k": ("[world.friction]\nk = 3", 3),
+    "world.friction.margin": ("[world.friction]\nmargin = 0.4", 0.4),
+    "world.friction.kinetic_ratio": ("[world.friction]\nkinetic_ratio = 0.95", 0.95),
+    "world.agent.reverse_factor": ("[world.agent]\nreverse_factor = 0.4", 0.4),
+    "world.contact.stiffness": ("[world.contact]\nstiffness = 150.0", 150.0),
+    "world.contact.box_stiffness": ("[world.contact]\nbox_stiffness = 1500.0", 1500.0),
+    "world.contact.damping_ratio": ("[world.contact]\ndamping_ratio = 0.2", 0.2),
+    "world.simulation.dt": ("[world.simulation]\ndt = 0.04", 0.04),
+}
+
+
+def _override(key: str) -> tuple[str, Any]:
+    if key in SPECIAL:
+        return SPECIAL[key]
+    value = KEYS[key]
+    new = value + 1 if isinstance(value, int) else value * 1.1
+    table, _, leaf = key.rpartition(".")
+    return f"[{table}]\n{leaf} = {new!r}", new
+
+
+def test_every_key_is_listed() -> None:
+    """The keys a config can set: all of the world's physics, and these, no more."""
+    assert {k for k in KEYS if not k.startswith("world.")} == {
+        "name", "sensing.range", "team.agents", "brain.hidden", "scenarios.easy", "scenarios.full", "scenarios.held_out",
+        "scenarios.seed", "fitness.progress", "fitness.delivery", "fitness.time", "fitness.approach", "evolution.population",
+        "evolution.generations", "run.seed", "run.backend", "run.device", "run.precision",
+    }  # fmt: skip
+    assert {k.split(".")[1] for k in KEYS if k.startswith("world.")} == {"arena", "box", "friction", "agent", "contact", "simulation"}
+
+
+@pytest.mark.parametrize("key", sorted(KEYS))
+def test_every_key_overrides(key: str) -> None:
+    text, expected = _override(key)
+    changed = _leaves(tomllib.loads(dump_config(parse_config(text))))
+    assert changed[key] == pytest.approx(expected) if isinstance(expected, float) else changed[key] == expected
+    assert {k for k in KEYS if changed[k] != KEYS[k]} <= {key, "run.device"}, "only the key changes (numpy's device is cpu)"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[scenarios]\ngenerator = 2",
+        "[scenarios]\nheld_out_seed = 2",
+        "[strategy]\npopulation = 10",
+        "[budget]\ngenerations = 3",
+        "[sensing]\nrays = 12",
+        "[sensing]\nsectors = 8",
+        "[sensing]\nray_range = 8.0",
+        "[brain]\nscale = 1.0",
+        "[run]\ncheckpoint_every = 1",
+        "[fitness]\nprogress_floor = -1.0",
+    ],
+)
+def test_removed_keys_are_errors_naming_the_key(text: str) -> None:
+    table = tomllib.loads(text)
+    (section,) = table
+    (leaf,) = table[section]
+    key = section if section in ("strategy", "budget") else f"{section}.{leaf}"
+    with pytest.raises(ConfigError, match=re.escape(f"{key!r} is not a config key: {REMOVED[key]}")):
+        parse_config(text)
 
 
 @pytest.mark.parametrize(
     ("text", "key"),
     [
-        ("[strategy]\npopulaton = 10", "strategy.populaton"),
+        ("[evolution]\npopulaton = 10", "evolution.populaton"),
         ("[world.frction]\nk = 3", "world.frction"),
         ("colour = 1", "colour"),
         ("[team]\nagents = 'forty'", "team.agents"),
         ("[team]\nagents = 2.5", "team.agents"),
         ("[brain]\nhidden = 32", "brain.hidden"),
         ("[brain]\nhidden = [32, 'x']", "brain.hidden[1]"),
+        ("[brain]\nhidden = []", "brain.hidden"),
         ("[run]\nbackend = 'jax'", "run.backend"),
         ("[run]\nbackend = 'numpy'\ndevice = 'mps'", "run.device"),
         ("[fitness]\napproach = -1.0", "fitness.approach"),
-        ("[budget]\ngenerations = 0", "budget.generations"),
+        ("[evolution]\ngenerations = 0", "evolution.generations"),
+        ("[evolution]\npopulation = 1", "evolution.population"),
+        ("[sensing]\nrange = 0.0", "sensing.range"),
         ("[world.friction]\nk = 0", "friction.k"),
         ("[world.simulation]\ndt = 1.0", "contact is unstable"),
         ("[team]\nagents = true", "team.agents"),
@@ -164,17 +218,19 @@ def test_not_toml_is_an_error() -> None:
 def test_the_effective_config_round_trips_through_toml() -> None:
     changed = parse_config("[world.agent]\nmax_speed = inf\n[brain]\nhidden = [16, 8]\n[fitness]\napproach = 0.05\n", name="x")
     for config in (TrainingConfig(), changed):
-        text = dump_config(config)
-        assert parse_config(text) == config
-        assert "ray_range" not in text  # None is left out: TOML has no null
+        assert parse_config(dump_config(config)) == config
     assert math.isinf(parse_config(dump_config(changed)).world.agent.max_speed)
 
 
-def test_config_differences_ignore_the_budget() -> None:
-    a = TrainingConfig()
-    assert config_differences(a, a.with_generations(900)) == []
-    b = parse_config("[fitness]\ntime = 2.0\n[team]\nagents = 20\n[scenarios]\ngenerator = 2")
-    assert config_differences(a, b) == ["fitness.time: recorded 1.0, given 2.0", "team.agents: recorded 40, given 20"]
+@pytest.mark.parametrize("seed", [0, 1, 7])
+def test_the_held_out_seed_is_derived_and_its_set_disjoint(seed: int) -> None:
+    """The held-out set comes from `seed + 1` on a stream of its own: never a training layout."""
+    config = parse_config(f"[team]\nagents = 6\n[scenarios]\neasy = 2\nfull = 6\nheld_out = 8\nseed = {seed}")
+    assert config.scenarios.held_out_seed == seed + 1
+    training, held = train.training_set(config), train.held_out_set(config)
+    scenarios.check_disjoint(training, held)
+    direct = scenarios.held_out_set(6, config.world, seed=seed + 1, count=8)
+    assert held.fingerprint == direct.fingerprint and all(s.params["difficulty"] == "full" for s in held)
 
 
 @pytest.mark.parametrize("preset", ["smoke", "pilot", "full"])
@@ -182,9 +238,8 @@ def test_the_presets_load(preset: str) -> None:
     config = load_config(CONFIGS / f"{preset}.toml")
     assert config.name == preset
     if preset == "smoke":
-        assert (config.run.backend, config.team.agents, config.strategy.population, config.budget.generations) == ("numpy", 10, 10, 3)
+        assert (config.run.backend, config.team.agents, config.evolution.population, config.evolution.generations) == ("numpy", 10, 10, 3)
     else:
-        assert (config.team.agents, config.strategy.population, config.scenarios.easy, config.scenarios.full) == (40, 100, 4, 28)
-        assert (config.run.backend, config.run.device, config.max_steps) == ("torch", "mps", 900)
-    assert config.budget.generations == {"smoke": 3, "pilot": 25, "full": 400}[preset]
-    assert config.scenarios.generator == 2, "every preset uses generator 2 (M2b)"
+        assert (config.team.agents, config.evolution.population, config.scenarios.easy, config.scenarios.full) == (40, 100, 4, 28)
+        assert (config.run.backend, config.run.device, config.max_steps, config.scenarios.held_out) == ("torch", "mps", 900, 64)
+        assert config.evolution.generations == {"pilot": 25, "full": 400}[preset]

@@ -1,4 +1,4 @@
-"""The probe's fixes (M2a): every backend is warmed up before anything is timed, and Metal's memory comes from `torch.mps`.
+"""The probe's measurements: every backend is warmed up before anything is timed, and Metal's memory comes from `torch.mps`.
 Unit-level: no Metal in CI, so `torch.mps` is a fake here."""
 
 from types import SimpleNamespace

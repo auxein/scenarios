@@ -1,4 +1,4 @@
-"""Milestones (design doc §7): the log spacing, the last generation, unchanged champions skipped, and the override."""
+"""Snapshots: the log spacing, the last generation, unchanged champions skipped, and the generations listed."""
 
 from pathlib import Path
 
@@ -8,11 +8,11 @@ from auxein.recording.reader import RecordedEvaluation, open_run
 
 from auxein_scenarios.box_pushing import train
 from auxein_scenarios.box_pushing.config import load_config
-from auxein_scenarios.box_pushing.milestones import (
-    MilestoneError,
+from auxein_scenarios.box_pushing.snapshots import (
+    SnapshotError,
     default_generations,
-    find_milestones,
-    parse_generations,
+    find_snapshots,
+    is_snapshot,
     select,
 )
 
@@ -30,7 +30,7 @@ def test_log_spacing_with_the_last_generation() -> None:
     assert default_generations(400) == [1, 2, 5, 10, 20, 50, 100, 200, 400]
     assert default_generations(500) == [1, 2, 5, 10, 20, 50, 100, 200, 500], "the last is not repeated when it is on the grid"
     assert default_generations(1234) == [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 1234]
-    with pytest.raises(MilestoneError):
+    with pytest.raises(SnapshotError):
         default_generations(0)
 
 
@@ -42,30 +42,27 @@ def test_unchanged_champions_are_skipped() -> None:
     assert [m.generation for m in select([1, 2], [None, champion(4)])] == [2]
 
 
-def test_the_override() -> None:
-    assert parse_generations("1,50,400") == [1, 50, 400]
-    assert parse_generations(" 3, 1 ") == [3, 1]
-    for bad in ("", "1,x", "one"):
-        with pytest.raises(MilestoneError):
-            parse_generations(bad)
+def test_the_schedule() -> None:
+    assert [g for g in range(1, 1001) if is_snapshot(g)] == [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
+    assert not is_snapshot(0)
 
 
 def test_on_a_recorded_run(tmp_path: Path) -> None:
     run = tmp_path / "smoke"
     train.train(load_config(ROOT / "configs" / "smoke.toml"), run, out=lambda _: None, progress=False, estimate=False)
     recording = run / train.RECORDING
-    milestones = find_milestones(recording)
+    snapshots = find_snapshots(recording)
     with open_run(recording) as reader:
-        assert milestones[-1].generation == reader.generations() == 3
-        for m in milestones:
+        assert snapshots[-1].generation == reader.generations() == 3
+        for m in snapshots:
             best = reader.best_up_to(m.generation)
             assert best is not None and int(best.candidate_id) == m.candidate_id
-    ids = [m.candidate_id for m in milestones]
+    ids = [m.candidate_id for m in snapshots]
     assert len(ids) == len(set(ids)), "no champion twice"
 
     def listed(generations: list[int]) -> list[tuple[int, int]]:
-        return [(m.generation, m.candidate_id) for m in find_milestones(recording, generations)]
+        return [(m.generation, m.candidate_id) for m in find_snapshots(recording, generations)]
 
     assert listed([3, 1, 3]) == listed([1, 3]), "the override is sorted and each generation counted once"
-    with pytest.raises(MilestoneError, match="generations 1 to 3"):
-        find_milestones(recording, [1, 4])
+    with pytest.raises(SnapshotError, match="generations 1 to 3"):
+        find_snapshots(recording, [1, 4])

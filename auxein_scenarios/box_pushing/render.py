@@ -1,9 +1,9 @@
-"""Drawing box-pushing worlds (design doc §7): clips of recorded trajectories and galleries of scenario layouts.
+"""Drawing box-pushing episodes: the video `deploy` makes, one panel per brain and scenario.
 
-Rendering is **offline and draws a recorded trajectory** (`world.TrajectoryRecorder`), so a clip shows exactly what the physics
-computed. Everything is drawn in the scenarios' theme (`common.theme`): monochrome silver on near-black, state shown with
-brightness, never with hue. A clip has a header (a small tracked label, a light headline, a muted lead saying what to look
-for) above one panel per scenario:
+Rendering is **offline and draws a recorded trajectory** (`world.TrajectoryRecorder`, filled by the same step loop that scores
+an episode), so a video shows exactly what the physics computed. Everything is drawn in the scenarios' theme (`common.theme`):
+monochrome silver on near-black, state shown with brightness, never with hue. A video has a header (a small tracked label, a
+light headline, a muted lead saying what to look for) above its panels, each:
 
 - the floor, lit at its centre; the arena's walls; the obstacles in slate; the target zone as a dashed silver ring, filled
   once the box is delivered;
@@ -11,33 +11,12 @@ for) above one panel per scenario:
   (its heading);
 - the agents as silver chevrons along their heading, inside a faint outline of their disc, bright white while they touch the
   box; agents within `LINK_RANGE` of each other joined by faint lines;
-- a corner caption: the scenario, the step and simulated time, and the box's state (at rest, moving with how many agents
-  touching it, or delivered).
+- a corner caption (what the panel shows, the step and simulated time, the box's state: at rest, moving with how many agents
+  touching it, or delivered), and a footer (a note, and how the episode ended).
 
-A panel shows one **cell**, a candidate on a scenario: by default one candidate on every scenario (the demos), or, for brains,
-every candidate on one scenario (`cells`).
-
-**The sensing overlay** (M1b, design doc §7), optional, draws what chosen agents sensed at each step (`environment.SensingTrace`,
-recorded by the same step loop that scores an episode), again with brightness only:
-
-- the watched agent bright white, inside its sensing circle `r` (dashed), with ticks at the sector boundaries;
-- its rays, faint, each ending in a dot where it hit: bright white on the box, steel on a wall or an obstacle, none when nothing
-  was in range; rays on the box drawn brighter;
-- the box cue, a line to the box's centre, while the box is in range;
-- the teammates it senses, joined to it by lines as bright as they weigh (`1 − d / r`): M1a's faint links, now meaning "sensed".
-  With the overlay on, these replace the proximity links.
-
-**Montages** (M3, design doc §7) draw trained champions at chosen generations, at a fixed video size (1920 × 1080 by
-default), in the same panels:
-
-- **`render_sequence_montage`**: one segment per milestone, one after another, each opened by a title card ("Generation 50",
-  its score and deliveries), the milestone's champion on the showcase scenarios, a header that names the generation, and a
-  small fitness-over-generations curve whose marker moves to the milestone being shown;
-- **`render_grid_montage`**: a few milestones side by side on **one** scenario, simultaneously: the clearest before and after,
-  with the same curve marking the generations shown.
-
-Every panel of a clip or montage of a run carries a footer saying plainly what it is (a training scenario, or a held-out one
-never seen in training) and how its episode ended.
+Panels may come from different trajectories (brains deployed in their own worlds, with their own team sizes): each panel is a
+`Panel`, a cell of its own trajectory. Their episodes end at different steps; a panel whose episode has ended holds its last
+state while the others play on.
 """
 
 # matplotlib's stubs type many methods' **kwargs as unknown (set_xticks, plot, text, savefig, grab_frame...), and imageio-ffmpeg
@@ -47,7 +26,7 @@ never seen in training) and how its episode ended.
 import math
 import textwrap
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -58,30 +37,15 @@ from matplotlib.collections import EllipseCollection, LineCollection, PolyCollec
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Polygon, Rectangle
-from matplotlib.text import Text
 
-from auxein_scenarios.box_pushing.config import SensingParams, WorldParams
-from auxein_scenarios.box_pushing.environment import TOUCH_TOLERANCE, SensingTrace
-from auxein_scenarios.box_pushing.sensors import HIT_BOX, HIT_OBSTACLE
+from auxein_scenarios.box_pushing.config import WorldParams
+from auxein_scenarios.box_pushing.environment import TOUCH_TOLERANCE
 from auxein_scenarios.box_pushing.world import Trajectory
 from auxein_scenarios.common import theme
 from auxein_scenarios.common.geometry import obb_contact, obb_corners
-from auxein_scenarios.common.rendering import CurveInset, TitleCard, figure, frame_records, grid_shape, save_png, write_mp4
+from auxein_scenarios.common.rendering import figure, frame_records, grid_shape, write_mp4
 
-__all__ = [
-    "LINK_RANGE",
-    "TOUCH_TOLERANCE",
-    "Curve",
-    "Segment",
-    "render_clip",
-    "render_gallery",
-    "render_grid_montage",
-    "render_sequence_montage",
-    "touching",
-]
-
-Cell = tuple[int, int]
-"""A panel's content: a candidate (row of the batch) on a scenario (column)."""
+__all__ = ["LINK_RANGE", "TOUCH_TOLERANCE", "Panel", "render_panels", "touching"]
 
 LINK_RANGE = 1.5
 """Agents closer than this (centre to centre, in units) are joined by a line, fainter as they are farther apart."""
@@ -169,60 +133,6 @@ def _draw_static(ax: Axes, layout: Mapping[str, object], params: WorldParams) ->
     return filled
 
 
-class _Overlay:
-    """What one watched agent sensed, drawn over a panel (see the module docstring)."""
-
-    def __init__(self, ax: Axes, sensing: SensingParams, agent: int, rays: int, half: float) -> None:
-        self.sensing, self.agent = sensing, agent
-        self.circle = Circle(
-            (0.0, 0.0), sensing.range, fill=False, linestyle=(0, (2, 3)), edgecolor=theme.rgba(theme.SILVER, 0.35), linewidth=0.8, zorder=2
-        )
-        ax.add_patch(self.circle)
-        self.ticks = LineCollection([], linewidths=0.8, colors=[theme.rgba(theme.SILVER, 0.35)], zorder=2)
-        ax.add_collection(self.ticks)
-        self.rays = LineCollection([], linewidths=0.6, zorder=2)
-        ax.add_collection(self.rays)
-        self.cue = Line2D([], [], linewidth=1.0, color=theme.rgba(theme.TEXT, 0.7), zorder=3)
-        ax.add_line(self.cue)
-        self.sensed = LineCollection([], linewidths=0.9, zorder=2)
-        ax.add_collection(self.sensed)
-        self.hits = ax.scatter(np.zeros(rays), np.zeros(rays), s=np.zeros(rays), linewidths=0, zorder=6)
-        # the sensing circle reaches past the walls: keep the overlay inside the arena
-        arena = Rectangle((-half, -half), 2 * half, 2 * half, transform=ax.transData)
-        for artist in (self.circle, self.ticks, self.rays, self.cue, self.sensed, self.hits):
-            artist.set_clip_path(arena)
-
-    def update(
-        self, senses: SensingTrace, t: int, n: int, s: int, x: HostArray, y: HostArray, heading: HostArray, box: tuple[float, float]
-    ) -> None:
-        a = senses.agents.index(self.agent)
-        ax_, ay_ = float(x[self.agent]), float(y[self.agent])
-        self.circle.set_center((ax_, ay_))
-        r = self.sensing.range
-        width = 2.0 * math.pi / self.sensing.sectors
-        bounds = float(heading[self.agent]) + width * (np.arange(self.sensing.sectors) + 0.5)
-        self.ticks.set_segments(
-            [
-                np.array([[ax_ + 0.82 * r * math.cos(b), ay_ + 0.82 * r * math.sin(b)], [ax_ + r * math.cos(b), ay_ + r * math.sin(b)]])
-                for b in bounds
-            ]
-        )
-        ends_x, ends_y, hit = senses.ray_x[t, n, s, a], senses.ray_y[t, n, s, a], senses.ray_hit[t, n, s, a]
-        self.rays.set_segments([np.array([[ax_, ay_], [ex, ey]]) for ex, ey in zip(ends_x.tolist(), ends_y.tolist(), strict=True)])
-        self.rays.set_color([theme.rgba(theme.TEXT, 0.45) if h == HIT_BOX else theme.rgba(theme.SILVER, 0.16) for h in hit.tolist()])
-        self.hits.set_offsets(np.stack([ends_x, ends_y], axis=-1))
-        self.hits.set_sizes([9.0 if h == HIT_BOX else 5.0 if h == HIT_OBSTACLE else 0.0 for h in hit.tolist()])
-        self.hits.set_facecolor([theme.TEXT if h == HIT_BOX else theme.STEEL for h in hit.tolist()])
-        if bool(senses.box_on[t, n, s, a]):
-            self.cue.set_data([ax_, box[0]], [ay_, box[1]])
-        else:
-            self.cue.set_data([], [])
-        weight = senses.teammate_weight[t, n, s, a]
-        others = np.nonzero(weight > 0.0)[0].tolist()
-        self.sensed.set_segments([np.array([[ax_, ay_], [float(x[j]), float(y[j])]]) for j in others])
-        self.sensed.set_color([theme.rgba(theme.SILVER, 0.15 + 0.5 * float(weight[j])) for j in others])
-
-
 class _Panel:
     """One scenario's panel: the static scene, and the artists that move, updated in place for every frame."""
 
@@ -234,7 +144,6 @@ class _Panel:
         label: str,
         agents: int,
         size: float,
-        overlays: Sequence[_Overlay] = (),
     ) -> None:
         self.ax, self.params, self.label = ax, params, label
         self.target_fill = _draw_static(ax, layout, params)
@@ -260,7 +169,6 @@ class _Panel:
         ax.add_collection(self.discs)
         self.chevrons = PolyCollection([], linewidths=0, zorder=5)
         ax.add_collection(self.chevrons)
-        self.overlays = list(overlays)
         # the caption scales with the panel: sizes are for a 5-inch panel
         scale = size / 5.0
         self.caption_label = ax.text(
@@ -308,9 +216,7 @@ class _Panel:
         self.caption_status.set_text(theme.tracked(status) if status else "")
         self.caption_status.set_color(theme.TEXT if bright else theme.SUBTLE)
 
-    def update(
-        self, trajectory: Trajectory, record: int, candidate: int, scenario: int, dt: float, senses: SensingTrace | None = None
-    ) -> None:
+    def update(self, trajectory: Trajectory, record: int, candidate: int, scenario: int, dt: float) -> None:
         t, n, s, p = record, candidate, scenario, self.params
         bx, by, angle = float(trajectory.box_x[t, n, s]), float(trajectory.box_y[t, n, s]), float(trajectory.box_angle[t, n, s])
         resting, delivered = bool(trajectory.box_at_rest[t, n, s]), bool(trajectory.done[t, n, s])
@@ -334,16 +240,10 @@ class _Panel:
         touch = touching(trajectory, t, n, s, p)
         self.discs.set_offsets(np.stack([x, y], axis=-1))
         self.chevrons.set_verts(list(_chevrons(x, y, heading, p.agent.radius)))
-        watched = {overlay.agent for overlay in self.overlays}
-        self.chevrons.set_facecolor([theme.TEXT if hit or i in watched else theme.rgba(theme.SILVER, 0.8) for i, hit in enumerate(touch)])
-        if self.overlays and senses is not None:
-            self.links.set_segments([])
-            for overlay in self.overlays:
-                overlay.update(senses, t, n, s, x, y, heading, (bx, by))
-        else:
-            segments, colours = _links(x, y)
-            self.links.set_segments(segments)
-            self.links.set_color(colours)
+        self.chevrons.set_facecolor([theme.TEXT if hit else theme.rgba(theme.SILVER, 0.8) for hit in touch])
+        segments, colours = _links(x, y)
+        self.links.set_segments(segments)
+        self.links.set_color(colours)
 
         step = int(trajectory.step[t])
         readout = f"step {step:d}  ·  {step * dt:.1f} s"
@@ -385,38 +285,47 @@ def _header_height(width: float, kicker: str, title: str, lead: str) -> float:
     return 0.36 + (0.3 if kicker else 0.0) + 0.42 * headline + (0.12 if body else 0.0) + 0.21 * body + 0.3
 
 
-def _panel_at(
-    fig: Figure,
-    rect: tuple[float, float, float, float],
-    layout: Mapping[str, object],
-    params: WorldParams,
-    label: str,
-    size: float,
-    watch: Sequence[int] = (),
-    sensing: SensingParams | None = None,
-) -> _Panel:
-    """A panel in `rect` (figure fractions), `size` inches wide (for its caption's type)."""
-    ax = fig.add_axes(rect)
-    agents = len(cast("list[object]", layout["agents"]))
-    chosen = sensing or SensingParams()
-    overlays = [_Overlay(ax, chosen, agent, chosen.rays, params.arena.half) for agent in watch]
-    return _Panel(ax, layout, params, label, agents, size, overlays)
+@dataclass(frozen=True)
+class Panel:
+    """One panel of a video: `candidate` on `scenario` (indices into `trajectory`'s batch), whose layout is `layout`, in the
+    world `params`; `label` heads it, and the footer says `note` and `outcome`."""
+
+    trajectory: Trajectory
+    candidate: int
+    scenario: int
+    layout: Mapping[str, object]
+    params: WorldParams
+    label: str
+    note: str = ""
+    outcome: str = ""
+
+    @property
+    def records(self) -> int:
+        """The records up to the step its episode ended (a batch runs on until all its episodes have, frozen once they have)."""
+        done = np.asarray(self.trajectory.done)[:, self.candidate, self.scenario]
+        ended = np.nonzero(done)[0]
+        return int(ended[0]) + 1 if ended.size else int(self.trajectory.records)
 
 
-def _panels(
-    layouts: Sequence[Mapping[str, object]],
-    params: WorldParams,
-    labels: Sequence[str] | None,
-    columns: int | None,
-    kicker: str,
-    title: str,
-    subtitle: str,
-    panel_size: float,
-    dpi: int,
-    watch: Sequence[int] = (),
-    sensing: SensingParams | None = None,
-) -> tuple[Figure, list[_Panel]]:
-    rows, cols = grid_shape(len(layouts), columns)
+def render_panels(
+    panels: Sequence[Panel],
+    path: str | Path,
+    *,
+    kicker: str = "",
+    title: str = "",
+    subtitle: str = "",
+    columns: int | None = None,
+    fps: float = 30.0,
+    speedup: float = 3.0,
+    panel_size: float = 4.0,
+    dpi: int = 100,
+) -> Path:
+    """An MP4 of `panels`, in rows of `columns` (as square as possible by default), under a header: `kicker` (a short label),
+    `title` (the headline) and `subtitle` (the lead: say there what to look for). Simulated time runs `speedup` times faster
+    than real time, until the longest episode has ended."""
+    if not panels:
+        raise ValueError("a video needs at least one panel")
+    rows, cols = grid_shape(len(panels), columns)
     width = cols * panel_size + (cols + 1) * GUTTER
     header = _header_height(width, kicker, title, subtitle) if (kicker or title or subtitle) else GUTTER
     height = header + rows * panel_size + rows * GUTTER
@@ -424,279 +333,25 @@ def _panels(
     fig.set_facecolor(theme.BACKGROUND)
     if kicker or title or subtitle:
         _header(fig, width, kicker, title, subtitle)
-    panels: list[_Panel] = []
-    for i, layout in enumerate(layouts):
+    drawn: list[_Panel] = []
+    for i, p in enumerate(panels):
         row, col = divmod(i, cols)
         left = GUTTER + col * (panel_size + GUTTER)
         bottom = height - header - (row + 1) * panel_size - row * GUTTER
-        label = labels[i] if labels is not None else f"scenario {i}"
-        rect = (left / width, bottom / height, panel_size / width, panel_size / height)
-        panels.append(_panel_at(fig, rect, layout, params, label, panel_size, watch, sensing))
-    return fig, panels
-
-
-def render_clip(
-    trajectory: Trajectory,
-    layouts: Sequence[Mapping[str, object]],
-    params: WorldParams,
-    path: str | Path,
-    *,
-    scenarios: Sequence[int] | None = None,
-    candidate: int = 0,
-    cells: Sequence[Cell] | None = None,
-    labels: Sequence[str] | None = None,
-    senses: SensingTrace | None = None,
-    sensing: SensingParams | None = None,
-    kicker: str = "",
-    title: str = "",
-    subtitle: str = "",
-    fps: float = 30.0,
-    speedup: float = 2.0,
-    columns: int | None = None,
-    panel_size: float = 5.0,
-    dpi: int = 100,
-    footers: Sequence[tuple[str, str]] | None = None,
-    records: int | None = None,
-) -> Path:
-    """An MP4 of a recorded trajectory, one panel per cell (a candidate on a scenario).
-
-    The cells are `cells` if given, else candidate `candidate` on `scenarios` (all of them by default); `labels` name the
-    panels, in the order of the cells (by default the scenarios'). `layouts` are the params of every scenario of the trajectory
-    (for the static scene). With `senses` (recorded by `environment.WatchRecorder` alongside the trajectory, with the world's
-    `sensing`), the sensing overlay is drawn for its watched agents. `kicker` (a short label), `title` (the headline) and
-    `subtitle` (the lead: say there what to look for) go above the panels. Simulated time runs `speedup` times faster than real
-    time. `footers`, one `(note, outcome)` per cell, are written at the bottom of the panels (what the panel is, how its
-    episode ended); `records` shows only the first records (a candidate whose episodes ended before the batch's)."""
-    if cells is None:
-        cells = [(candidate, scenario) for scenario in (range(len(layouts)) if scenarios is None else scenarios)]
-    chosen = list(cells)
-    names = list(labels) if labels is not None else [f"scenario {s}" for _, s in chosen]
-    if senses is not None and senses.ray_x.shape[0] != trajectory.records:
-        raise ValueError(f"the senses have {senses.ray_x.shape[0]} records and the trajectory {trajectory.records}: record both together")
-    watch = senses.agents if senses is not None else ()
-    fig, panels = _panels([layouts[s] for _, s in chosen], params, names, columns, kicker, title, subtitle, panel_size, dpi, watch, sensing)
-    for panel, (note, outcome) in zip(panels, footers or [("", "")] * len(panels), strict=True):
-        panel.footer(note, outcome)
-    frames = frame_records(trajectory.step[: records or trajectory.records], params.simulation.dt, fps, speedup)
+        ax = fig.add_axes((left / width, bottom / height, panel_size / width, panel_size / height))
+        agents = len(cast("list[object]", p.layout["agents"]))
+        panel = _Panel(ax, p.layout, p.params, p.label, agents, panel_size)
+        panel.footer(p.note, p.outcome)
+        drawn.append(panel)
+    longest = max(panels, key=lambda p: int(p.trajectory.step[p.records - 1]))
+    frames = frame_records(longest.trajectory.step[: longest.records], longest.params.simulation.dt, fps, speedup)
+    steps = [int(s) for s in np.asarray(longest.trajectory.step)[: longest.records]]
 
     def update(record: int) -> None:
-        for panel, (row, scenario) in zip(panels, chosen, strict=True):
-            panel.update(trajectory, record, row, scenario, params.simulation.dt, senses)
-
-    return write_mp4(fig, update, frames, path, fps)
-
-
-def render_gallery(
-    layouts: Sequence[Mapping[str, object]],
-    params: WorldParams,
-    path: str | Path,
-    *,
-    labels: Sequence[str] | None = None,
-    kicker: str = "",
-    title: str = "",
-    columns: int | None = None,
-    panel_size: float = 3.0,
-    dpi: int = 100,
-) -> Path:
-    """A PNG grid of scenario layouts at their start: obstacles, the target zone, the box and the agents."""
-    fig, panels = _panels(layouts, params, labels, columns, kicker, title, "", panel_size, dpi)
-    for panel, layout in zip(panels, layouts, strict=True):
-        agents = np.asarray(layout["agents"], dtype=np.float64).reshape(1, 1, 1, -1, 3)
-        box = np.asarray(layout["box"], dtype=np.float64).reshape(1, 1, 1, 3)
-        start = Trajectory(
-            step=np.zeros(1, dtype=np.int64),
-            agent_x=agents[..., 0],
-            agent_y=agents[..., 1],
-            agent_heading=agents[..., 2],
-            box_x=box[..., 0],
-            box_y=box[..., 1],
-            box_angle=box[..., 2],
-            box_at_rest=np.ones((1, 1, 1), dtype=bool),
-            done=np.zeros((1, 1, 1), dtype=bool),
-        )
-        panel.update(start, 0, 0, 0, params.simulation.dt)
-        difficulty, attempts = layout.get("difficulty", ""), layout.get("attempts", "")
-        team = len(cast("list[object]", layout["agents"]))
-        draws = f"  ·  {attempts} draw{'s' if attempts != 1 else ''}" if attempts else ""
-        panel.caption(f"{difficulty}  ·  {team} agents{draws}", "", False)
-    return save_png(fig, path)
-
-
-# --- montages (M3) ---
-
-
-@dataclass(frozen=True)
-class Curve:
-    """The inset's data: `y` over `x` (the best score over generations), an optional `faint` second line (the generation's
-    mean) and quiet `marks` (the milestones' generations)."""
-
-    x: Sequence[float]
-    y: Sequence[float]
-    faint: Sequence[float] | None = None
-    marks: Sequence[float] = ()
-    label: str = "fitness over generations"
-
-
-@dataclass(frozen=True)
-class Segment:
-    """One milestone of a sequence montage: its candidate's row in the trajectory and how many records to show, the title
-    card's and header's text, one footer per showcase panel, and where its marker sits on the curve (its generation)."""
-
-    candidate: int
-    records: int
-    label: str
-    headline: str
-    lead: str
-    at: float
-    footers: Sequence[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
-
-
-GUTTER_MONTAGE = 0.25
-"""Inches between panels in a montage, and at its edges."""
-
-
-def _montage_figure(size: tuple[int, int], dpi: int = 100) -> tuple[Figure, float, float]:
-    width, height = size[0] / dpi, size[1] / dpi
-    fig = figure(width, height, dpi)
-    fig.set_facecolor(theme.BACKGROUND)
-    return fig, width, height
-
-
-def _montage_header(fig: Figure, width: float, height: float, kicker: str) -> tuple[Text, Text]:
-    """The header texts of a montage, at its top: a fixed label, a headline and a lead that segments change."""
-    left = GUTTER_MONTAGE * 2 / width
-    top = 1.0 - 0.38 / height
-    fig.text(left, top, theme.tracked(kicker), color=theme.SILVER, fontproperties=theme.font("label", 10), va="top")
-    headline = fig.text(left, top - 0.32 / height, "", color=theme.TEXT, fontproperties=theme.font("headline", 30), va="top")
-    lead = fig.text(left, top - 0.9 / height, "", color=theme.MUTED, fontproperties=theme.font("lead", 13), va="top")
-    return headline, lead
-
-
-def _row_of_panels(
-    fig: Figure,
-    width: float,
-    height: float,
-    layouts: Sequence[Mapping[str, object]],
-    labels: Sequence[str],
-    params: WorldParams,
-    top: float,
-    bottom: float,
-    watch: Sequence[int],
-    sensing: SensingParams | None,
-) -> list[_Panel]:
-    """Panels for `layouts`, centred in the band between `top` and `bottom` (inches from the figure's bottom), as large as fit."""
-    count = len(layouts)
-    rows, cols = grid_shape(count, min(count, 4))
-    g = GUTTER_MONTAGE
-    size = min((width - (cols + 1) * g) / cols, (top - bottom - (rows - 1) * g) / rows)
-    x0 = (width - cols * size - (cols - 1) * g) / 2.0
-    y0 = bottom + (top - bottom - rows * size - (rows - 1) * g) / 2.0
-    panels: list[_Panel] = []
-    for i, layout in enumerate(layouts):
-        row, col = divmod(i, cols)
-        left = x0 + col * (size + g)
-        lower = y0 + (rows - 1 - row) * (size + g)
-        panels.append(
-            _panel_at(fig, (left / width, lower / height, size / width, size / height), layout, params, labels[i], size, watch, sensing)
-        )
-    return panels
-
-
-def _inset(fig: Figure, width: float, height: float, curve: Curve, band: float) -> CurveInset:
-    g = GUTTER_MONTAGE * 2
-    rect = ((g + 0.35) / width, 0.45 / height, (width - 2 * g - 0.35) / width, (band - 0.75) / height)
-    return CurveInset(fig, rect, curve.x, curve.y, faint=curve.faint, marks=curve.marks, label=curve.label, xlabel="generation", scale=1.3)
-
-
-def render_sequence_montage(
-    trajectory: Trajectory,
-    layouts: Sequence[Mapping[str, object]],
-    params: WorldParams,
-    path: str | Path,
-    *,
-    scenarios: Sequence[int],
-    labels: Sequence[str],
-    segments: Sequence[Segment],
-    curve: Curve,
-    kicker: str,
-    senses: SensingTrace | None = None,
-    sensing: SensingParams | None = None,
-    size: tuple[int, int] = (1920, 1080),
-    fps: float = 30.0,
-    speedup: float = 4.0,
-    card_seconds: float = 1.5,
-) -> Path:
-    """The milestones one after another (module docstring): for each segment a title card for `card_seconds`, then its
-    candidate on `scenarios` (indices into the trajectory's scenarios, whose `layouts` and `labels` they are), with the curve's
-    marker at the segment's generation."""
-    fig, width, height = _montage_figure(size)
-    headline, lead = _montage_header(fig, width, height, kicker)
-    band = min(2.2, 0.22 * height)
-    watch = senses.agents if senses is not None else ()
-    panels = _row_of_panels(fig, width, height, [layouts[s] for s in scenarios], labels, params, height - 1.7, band, watch, sensing)
-    inset = _inset(fig, width, height, curve, band)
-    card = TitleCard(fig, scale=height / 10.8)
-    dt = params.simulation.dt
-    frames: list[tuple[int, int]] = []  # (segment, record), record -1 for the title card
-    for i, segment in enumerate(segments):
-        frames += [(i, -1)] * max(1, round(card_seconds * fps))
-        frames += [(i, r) for r in frame_records(trajectory.step[: segment.records], dt, fps, speedup, hold=0.6)]
-    shown: list[int] = [-1]
-
-    def update(frame: tuple[int, int]) -> None:
-        i, record = frame
-        segment = segments[i]
-        if record < 0:
-            card.show(segment.label, segment.headline, segment.lead)
-            return
-        card.hide()
-        if shown[0] != i:
-            shown[0] = i
-            headline.set_text(segment.headline)
-            lead.set_text(segment.lead)
-            inset.mark(segment.at)
-            for panel, (note, outcome) in zip(panels, segment.footers or [("", "")] * len(panels), strict=True):
-                panel.footer(note, outcome)
-        for panel, scenario in zip(panels, scenarios, strict=True):
-            panel.update(trajectory, record, segment.candidate, scenario, dt, senses)
-
-    return write_mp4(fig, update, frames, path, fps)
-
-
-def render_grid_montage(
-    trajectory: Trajectory,
-    layouts: Sequence[Mapping[str, object]],
-    params: WorldParams,
-    path: str | Path,
-    *,
-    scenario: int,
-    candidates: Sequence[int],
-    labels: Sequence[str],
-    footers: Sequence[tuple[str, str]],
-    curve: Curve,
-    kicker: str,
-    title: str,
-    lead: str,
-    records: int | None = None,
-    size: tuple[int, int] = (1920, 1080),
-    fps: float = 30.0,
-    speedup: float = 3.0,
-) -> Path:
-    """`candidates` (rows of the trajectory) side by side on one scenario, simultaneously (module docstring)."""
-    fig, width, height = _montage_figure(size)
-    headline, lead_text = _montage_header(fig, width, height, kicker)
-    headline.set_text(title)
-    lead_text.set_text(lead)
-    band = min(2.2, 0.22 * height)
-    panels = _row_of_panels(fig, width, height, [layouts[scenario]] * len(candidates), labels, params, height - 1.7, band, (), None)
-    for panel, (note, outcome) in zip(panels, footers, strict=True):
-        panel.footer(note, outcome)
-    inset = _inset(fig, width, height, curve, band)
-    inset.mark(float(curve.marks[-1]) if curve.marks else float(curve.x[-1]))
-    frames = frame_records(trajectory.step[: records or trajectory.records], params.simulation.dt, fps, speedup)
-
-    def update(record: int) -> None:
-        for panel, candidate in zip(panels, candidates, strict=True):
-            panel.update(trajectory, record, candidate, scenario, params.simulation.dt)
+        step = steps[record]
+        for panel, p in zip(drawn, panels, strict=True):
+            own = np.asarray(p.trajectory.step)[: p.records]
+            at = min(int(np.searchsorted(own, step, side="right")) - 1, p.records - 1)
+            panel.update(p.trajectory, max(at, 0), p.candidate, p.scenario, p.params.simulation.dt)
 
     return write_mp4(fig, update, frames, path, fps)

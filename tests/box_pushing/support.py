@@ -64,7 +64,7 @@ class ZeroPolicy:
 
 class StatePolicy:
     """A scripted controller (which reads the true state) driving the world's step loop as if it were a policy: the loop's hook
-    hands it every state just before it acts. For tests that compare the environment with M1a's `simulate`."""
+    hands it every state just before it acts. For tests that compare the environment with the physics' own `simulate`."""
 
     def __init__(self, controller: Controller, layout: Layout, params: WorldParams, n: int = 1) -> None:
         self.controller, self.layout, self.params, self.n = controller, layout, params, n

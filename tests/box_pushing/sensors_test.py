@@ -1,4 +1,4 @@
-"""The sensors (design doc §3) against hand-built states: each part of the observation, its range, and batch invariance."""
+"""The sensors against hand-built states: each part of the observation, its range, and batch invariance."""
 
 import dataclasses
 import math
@@ -39,7 +39,7 @@ def tolerance(backend: Backend) -> float:
     return 1e-9 if backend.precision == "float64" else 1e-5
 
 
-def test_the_layout_is_defined_once_with_the_design_sizes() -> None:
+def test_the_layout_is_defined_once_with_its_sizes() -> None:
     assert LAYOUT.size == 43
     assert {name: g.stop - g.start for name, g in LAYOUT.groups.items()} == {
         "target": 3,
@@ -51,8 +51,7 @@ def test_the_layout_is_defined_once_with_the_design_sizes() -> None:
     starts = [p.start for p in LAYOUT.parts.values()]
     stops = [p.stop for p in LAYOUT.parts.values()]
     assert starts[0] == 0 and starts[1:] == stops[:-1], "the parts tile the vector in order"
-    other = observation_layout(SensingParams(rays=8, sectors=4))
-    assert other.size == 3 + 16 + 6 + 4 + 2
+    assert observation_layout(SensingParams(range=8.0)).size == 43, "the range scales distances, not the vector's size"
 
 
 def test_target_distance_and_bearing_in_the_agents_frame(backend: Backend) -> None:

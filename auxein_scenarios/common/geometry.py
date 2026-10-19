@@ -12,7 +12,7 @@ Everything is element-wise and branch-free (both sides of a case are computed an
 depend on the batch an entry is part of, and divisions are guarded so that no branch produces a NaN that a `where` would then
 have to discard (a NaN would still poison gradients and some backends' reductions).
 
-**Ray casts** (M1b, for the agents' range rays): a ray starts at `(ox, oy)` and runs along the unit direction `(dx, dy)`; every
+**Ray casts** (for the agents' range rays): a ray starts at `(ox, oy)` and runs along the unit direction `(dx, dy)`; every
 `ray_*` function returns the distance along it to the first point of a shape, **0 when the ray starts inside the shape**, and
 `max_range` when the shape is not hit within `[0, max_range]` ("no hit"). The sensor takes the minimum over the shapes, so a
 shape that is farther than another simply loses, and a padded obstacle slot (`valid` 0) returns `max_range` and never wins:

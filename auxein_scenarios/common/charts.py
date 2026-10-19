@@ -1,4 +1,4 @@
-"""Charts in the scenarios' theme (design doc §7): line charts as PNG and SVG, for the website and talks.
+"""Charts in the scenarios' theme: line charts as PNG and SVG, for the website and talks.
 
 The theme's rule holds for charts too: **no hue**. Series are told apart by brightness and by line style (solid, dashed,
 dotted), and each is labelled where it ends, so a chart reads without a legend box. A chart has the header of the clips (a
@@ -33,7 +33,7 @@ _DASHES: dict[Style, object] = {"solid": "-", "dashed": (0, (5, 3)), "dotted": (
 @dataclass(frozen=True)
 class Series:
     """One line: its `label` (written at its end), points, brightness (`color`, a theme colour) and `style`; `markers` puts a
-    dot on every point (for a few points, such as milestones)."""
+    dot on every point (for a few points, such as a run's snapshots)."""
 
     label: str
     x: Sequence[float]

@@ -1,4 +1,4 @@
-"""The physics core (design doc §2), on the corner backends: the friction threshold, rotation, tunnelling, conservation,
+"""The physics core, on the corner backends: the friction threshold, rotation, tunnelling, conservation,
 stability, delivery, determinism and batching."""
 
 import dataclasses

@@ -1,112 +1,76 @@
 # scenarios
 
 Demonstrations built on [Auxein](https://github.com/auxein/auxein), a Python framework for evolving agents that act in
-environments. Each scenario is a world plus everything needed to evolve agents in it, watch them and show the results: videos
-for a website and talks, and simple charts.
+environments. Each scenario is a world plus what it takes to evolve agents in it and to show what they learned. You train
+brains, then deploy them on situations they have never seen.
 
 ## Scenarios
 
-| Scenario | Status | Design |
+| Scenario | What happens | Design |
 |---|---|---|
-| **Cooperative box-pushing**: a team whose shared brain is evolved by Auxein pushes a box too heavy for any one of them to a target, among obstacles | M2a: fitness, the training config and command, a pilot run | [`docs/design/box-pushing.md`](docs/design/box-pushing.md) |
+| `box-pushing` | A team of agents, every one running the same evolved brain, pushes a box too heavy for any one of them to a target among obstacles. Each agent senses only its surroundings. | [`docs/design/box-pushing.md`](docs/design/box-pushing.md) |
 
 ## Install
 
 With [uv](https://docs.astral.sh/uv/), Python 3.11 or later:
 
 ```
-uv sync                  # numpy only, plus the dev tools and the video tools (matplotlib, a bundled ffmpeg)
-uv sync --extra torch    # with PyTorch: CPU-only wheels on Linux, the normal wheels (with Metal) on macOS
-uv sync --extra cma      # with pycma, for the CMA-ES comparison runs
+uv sync                  # numpy only (training on the CPU; fine for the smoke preset and the tests)
+uv sync --extra torch    # with PyTorch: Metal on Apple silicon, CUDA or the CPU elsewhere
 ```
 
-Auxein is a git dependency pinned to a release tag (`[tool.uv.sources]` in `pyproject.toml`). **To move to a newer tag**, change
-`tag = "..."` there, run `uv lock --upgrade-package auxein`, and update the pinned tag and commit in `tests/smoke_test.py`
-(the full checklist is in [`CLAUDE.md`](CLAUDE.md)).
+## Two commands
 
-## Watching the box-pushing world
+Every scenario has the same two verbs: `uv run scenarios <scenario> train|deploy`. Add `--extra torch` to `uv run` when you
+use torch, or uv removes it.
 
-The world can be watched before anything is trained: demo clips driven by scripted controllers, galleries of generated
-layouts, and policies acting on their own senses (random brains, a hand-written senses-only controller), with an optional
-overlay of what one agent senses. Output goes to `out/` (ignored by git).
+**Train** brains from a config. The presets are in `configs/`; a config lists only what it changes:
 
 ```
-uv run box-pushing demo all                                   # every demo clip, as MP4
-uv run box-pushing demo threshold                             # one of: threshold, rotation, obstacles, crowd, walls, delivery, sensing
-uv run box-pushing demo crowd --agents 100                    # the team size, for crowd, walls and delivery
-uv run box-pushing scenarios --difficulty full --seed 1 --count 12 --agents 20   # a gallery of layouts, as PNG
-uv run box-pushing brains --overlay                           # random brains, one panel each: the clueless start
-uv run box-pushing senses --difficulty full --agents 40       # the senses-only controller on generated scenarios
-uv run --extra torch box-pushing demo all --backend torch --device mps          # on Metal
-uv run python -m benchmarks.physics_timing --device mps                         # seconds per physics step
-uv run python -m benchmarks.probe --device mps                                  # seconds per generation, and a recommendation
+uv run scenarios box-pushing train configs/smoke.toml                  # seconds, numpy: a first try
+uv run --extra torch scenarios box-pushing train configs/pilot.toml    # the full sizes for 25 generations: about 25 minutes on Metal
+uv run --extra torch scenarios box-pushing train configs/full.toml     # 400 generations: about 6 hours on Metal
+uv run --extra torch scenarios box-pushing train --resume runs/full-<timestamp>                    # after Ctrl-C
+uv run --extra torch scenarios box-pushing train --resume runs/full-<timestamp> --generations 600  # extend it
 ```
 
-## Training
-
-A run is defined by a TOML config (`configs/` has presets; a config lists only what it changes from the design doc's
-defaults). Run directories go to `runs/` (ignored by git). Training defaults to torch on Metal, so install torch first
-(`uv sync --extra torch`); `smoke.toml` runs on numpy.
+**Deploy** trained brains on 64 new scenarios (by default), next to two baselines (random brains, a hand-written controller):
 
 ```
-uv run box-pushing train configs/smoke.toml                               # a few seconds, numpy: a first try
-uv run --extra torch box-pushing train configs/full.toml                  # the overnight run: about 6.2 hours on an M4
-uv run --extra torch box-pushing watch runs/full-<timestamp>              # the best brain so far, as MP4 (safe while it trains)
-uv run --extra torch box-pushing train --resume runs/full-<timestamp>     # after Ctrl-C (which stops after the current generation)
-uv run --extra torch box-pushing train --resume runs/full-<timestamp> --generations 600   # extend it
+uv run --extra torch scenarios box-pushing deploy runs/pilot-<timestamp>/brains/final.safetensors
+uv run --extra torch scenarios box-pushing deploy runs/pilot-<timestamp>/brains/{gen-0001,gen-0010,final}.safetensors
+uv run --extra torch scenarios box-pushing deploy BRAIN --agents 80 --scenarios 16 --seed 7 --no-video
 ```
 
-The presets use generator 2 of the scenarios (the box starts clear of walls and obstacles) and 4 easy + 28 full training
-scenarios. A config file without `[scenarios] generator` means generator 1, the generator before M2b, so runs recorded before
-it rebuild exactly their scenarios.
+Deploying several brains of one run together shows what training changed: the video gives each brain a row, on the same
+scenarios. `uv run scenarios box-pushing deploy --help` lists the options.
 
-`runs/<run>/progress.csv` is rewritten after every generation (best and mean score, success rate, `max_pushers`...), so a
-run can be charted while it goes on.
-
-## Showing a run
-
-Once a run has trained, one command makes its held-out report, its milestone clips, both montages and its charts, all under
-the run directory (with the run's backend: torch on Metal for the presets, hence `--extra torch`):
+## What they write
 
 ```
-uv run --extra torch box-pushing showcase runs/full-<timestamp>
+runs/<name>-<timestamp>/          # train
+  config.toml                     #   the run's config, every default filled in
+  progress.csv                    #   per generation: scores, success, cooperation
+  held_out.csv                    #   the saved brains judged on 64 scenarios never seen in training
+  brains/                         #   gen-<k>.safetensors at generations 1, 2, 5, 10, 20, 50, … and final.safetensors
+  charts/                         #   fitness, delivery, cooperation, generalisation (PNG and SVG)
+  recording/                      #   Auxein's record of the run (open it with auxein.open_run)
+
+deployments/<name>-<timestamp>/   # deploy
+  deploy.toml                     #   the options (the seed among them) and each brain's provenance
+  results.csv                     #   per brain and scenario: delivered, steps, progress, agents pushing
+  summary.md                      #   per brain and baseline: success, progress, success by distance
+  deployment.mp4                  #   a row per brain, on the same scenarios
 ```
 
-Or each step on its own:
-
-```
-uv run --extra torch box-pushing report runs/full-<timestamp>       # report/: champions and baselines on 64 unseen scenarios
-uv run --extra torch box-pushing milestones runs/full-<timestamp>   # clips/milestones/gen-<k>.mp4, one per milestone
-uv run --extra torch box-pushing montage runs/full-<timestamp>      # clips/montage-sequence.mp4 (--layout grid: side by side)
-uv run --extra torch box-pushing charts runs/full-<timestamp>       # charts/: fitness, delivery, cooperation, generalisation
-```
-
-To compare runs (e.g. two overnight runs, or a GA and a CMA-ES run) on one common held-out set, each champion in its own world:
-
-```
-uv run --extra torch box-pushing compare runs/full-<old> runs/full-<new>        # on the newest run's held-out set
-uv run --extra torch box-pushing showcase runs/full-<old> runs/full-<new>       # both showcases, then the comparison
-```
-
-Milestones are generations 1, 2, 5, 10, 20, 50, 100, 200, ... and the last (`--generations 1,50,400` to choose); clips show the
-same scenarios at every milestone (`--showcase train:0 held:3 best-held worst-held` to choose), and every panel says whether it
-is a training scenario or a held-out one never seen in training. The report's `report.md` ends with a recommendation for the
-next step.
+A brain is a small `.safetensors` file: its layers as tensors, and what it was trained in and where it came from as metadata.
+Both directories are ignored by git.
 
 ## Checks
 
 ```
-uv run ruff check
-uv run ruff format --check
-uv run pyright
-uv run pytest
+uv run ruff check && uv run ruff format --check && uv run pyright && uv run pytest
+uv run --extra torch pyright && uv run --extra torch pytest
 ```
 
-After `uv sync --extra torch`, use `uv run --no-sync ...` (or `uv run --extra torch ...`), since a plain `uv run` syncs back to
-the default installation. CI runs the checks on Linux, numpy only and with torch on the CPU.
-
-## Auxein bugs found here
-
-The scenarios are Auxein's first real user. Bugs found in Auxein are fixed in Auxein, test first, in their own PRs there, and
-this repository always depends on a released tag: see "Working on Auxein from this repository" in [`CLAUDE.md`](CLAUDE.md), and
-the log in [`docs/auxein-issues.md`](docs/auxein-issues.md).
+CI runs them with numpy only and with torch, on Python 3.11 to 3.14.

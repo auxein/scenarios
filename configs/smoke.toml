@@ -1,6 +1,5 @@
-# A tiny run, for tests and a first try on any machine: about a minute on a CPU, numpy only.
-#   uv run box-pushing train configs/smoke.toml
-# Only what differs from the defaults (docs/design/box-pushing.md §6) is listed.
+# A tiny run, for tests and a first try on any machine: well under a minute on a CPU, numpy only.
+#   uv run scenarios box-pushing train configs/smoke.toml
 
 [world.simulation]
 max_steps = 200
@@ -12,17 +11,12 @@ agents = 10
 easy = 2
 full = 2
 held_out = 4
-generator = 2
 
-[strategy]
+[evolution]
 population = 10
-offspring = 10
-
-[budget]
 generations = 3
 
 [run]
 backend = "numpy"
 device = "cpu"
 precision = "float64"
-checkpoint_every = 1

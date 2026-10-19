@@ -1,7 +1,7 @@
 """The world through Auxein: `EpisodeEvaluator` on both paths, a recorded two-generation run, and determinism end to end.
 
-The aggregator here is a **placeholder** (the mean final distance, minimised): the real one, with the shaped score of design doc
-§5.1, is M2's."""
+The aggregator here is a **placeholder** (the mean final distance, minimised), so that these tests depend on the world and Auxein
+only, not on the fitness."""
 
 import warnings
 from pathlib import Path
@@ -29,7 +29,7 @@ POLICY = brain()
 
 
 def placeholder() -> Aggregator:
-    """The tests' stand-in for M2's aggregator: the mean final distance of the box to the target, over the scenarios."""
+    """The tests' stand-in for the fitness's aggregator: the mean final distance of the box to the target, over the scenarios."""
     return Aggregator(objectives={"final_distance": mean("final_distance")}, descriptors={"delivered": mean("delivered")})
 
 
@@ -101,8 +101,8 @@ def measurements(backend: Backend, world: BoxPushingWorld, genomes: Any, scenari
 
 def tolerance(backend: Backend) -> float:
     """Bit for bit on numpy. On torch float32 a candidate's numbers may depend on the batch's shape (a CPU or GPU kernel can
-    block the brain's matrix products differently), and the contacts carry that on: within 1e-3, as M1a's physics (on this
-    machine's CPU they were identical too)."""
+    block the brain's matrix products differently), and the contacts carry that on: within 1e-3, as the physics' own tests
+    allow (on a CPU they are usually identical too)."""
     return 0.0 if backend.name == "numpy" else 1e-3
 
 
@@ -130,11 +130,12 @@ def test_a_candidate_alone_or_in_a_batch(corner_backend: Backend, genomes: Any) 
 
 
 def test_scenario_order_does_not_change_a_scenarios_result(corner_backend: Backend, genomes: Any) -> None:
+    """Up to the last bit on numpy: reordering the scenarios moves each one's agents in memory, and on x86 numpy's vectorised
+    mean over the agents can round a different last bit depending on where a row starts (1e-16 in `approach`)."""
     world = BoxPushingWorld(steps=80)
     forward = measurements(corner_backend, world, genomes, SET)
     reversed_set = ScenarioSet.from_params([s.params for s in reversed(SET)], seed=1, ids=list(reversed(SET.ids)))
     backward = measurements(corner_backend, world, genomes, reversed_set)
     for name in MEASUREMENTS:
-        np.testing.assert_allclose(
-            backward[name][:, ::-1], forward[name], rtol=tolerance(corner_backend), atol=tolerance(corner_backend), err_msg=name
-        )
+        rtol = tolerance(corner_backend) or 1e-12
+        np.testing.assert_allclose(backward[name][:, ::-1], forward[name], rtol=rtol, atol=tolerance(corner_backend), err_msg=name)

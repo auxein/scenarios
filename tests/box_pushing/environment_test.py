@@ -1,4 +1,4 @@
-"""The environment (design doc §2.11): both of Auxein's paths, the layout cache, early stop, the measurements and failures."""
+"""The environment: both of Auxein's paths, the layout cache, early stop, the measurements and failures."""
 
 import math
 from typing import Any
@@ -90,8 +90,8 @@ def test_the_world_ignores_the_agents_stream() -> None:
         assert np.array_equal(host(backend, a.measurements[name]), host(backend, b.measurements[name]))
 
 
-def test_measurements_of_the_push_controller_match_m1a(corner_backend: Backend) -> None:
-    """The M1a push team, run through the environment's loop, delivers what `simulate` delivers, at the same step."""
+def test_measurements_of_the_push_controller_match_simulate(corner_backend: Backend) -> None:
+    """The scripted push team, run through the environment's loop, delivers what `simulate` delivers, at the same step."""
     generated = scenarios.training_set(20, PARAMS, seed=11, mix=((scenarios.EASY, 6),))
     world = BoxPushingWorld()
     layout = world.layout(tuple(generated), corner_backend)
@@ -108,7 +108,7 @@ def test_measurements_of_the_push_controller_match_m1a(corner_backend: Backend) 
     np.testing.assert_allclose(got["final_distance"], final, rtol=1e-5, atol=1e-5)
     assert np.all(got["final_distance"][done] <= PARAMS.simulation.target_radius)
     # max_pushers counts agents touching the box: a delivery needs k agents' thrust, but agents queued in a column push through
-    # the ones in front (design doc §2.4), so as few as two may touch it
+    # the ones in front, so as few as two may touch it
     assert np.all(got["max_pushers"][done] >= 1.0)
 
 
