@@ -1,4 +1,4 @@
-"""The scenario generator (design doc §4): seeds, difficulties, validity and rejection, the sets, JSON, fingerprints, and the
+"""The scenario generator: seeds, difficulties, validity and rejection, the sets, JSON, fingerprints, and the
 layout arrays the physics uses."""
 
 import math
@@ -35,7 +35,7 @@ def test_same_seed_same_layouts(training: ScenarioSet) -> None:
 def test_the_default_training_mix(training: ScenarioSet) -> None:
     assert len(training) == 32
     difficulties = [s.params["difficulty"] for s in training]
-    assert difficulties == ["easy"] * 8 + ["full"] * 24
+    assert difficulties == ["easy"] * 4 + ["full"] * 28
     assert training.ids[0] == "train-0000"
 
 
@@ -157,3 +157,27 @@ def test_layout_arrays(backend: Backend, training: ScenarioSet) -> None:
         scenarios.layout_arrays([layouts[0], layout_params([0, 0, 0], [5, 0], [[1, 1, 0]])], backend)
     x = np.asarray(backend.to_numpy(arrays.agent_x))[0, 2]
     np.testing.assert_allclose(x, [a[0] for a in cast("list[list[float]]", layouts[2]["agents"])], rtol=1e-6)
+
+
+def _clearance(layout: dict[str, object]) -> float:
+    """The box's clearance, computed here independently of the generator: from its centre to the nearest wall and obstacle
+    surface (circles: centre distance less the radius; rectangles: the exact distance to an axis-aligned rectangle), less the
+    circumscribed radius, which bounds the box's footprint in any orientation."""
+    x, y, _ = (float(v) for v in layout["box"])  # type: ignore[union-attr]
+    nearest = min(PARAMS.arena.half - abs(x), PARAMS.arena.half - abs(y))
+    for cx, cy, r in layout["circles"]:  # type: ignore[union-attr]
+        nearest = min(nearest, math.hypot(x - cx, y - cy) - r)
+    for rx, ry, hx, hy in layout["rects"]:  # type: ignore[union-attr]
+        nearest = min(nearest, math.hypot(max(abs(x - rx) - hx, 0.0), max(abs(y - ry) - hy, 0.0)))
+    return nearest - math.hypot(PARAMS.box.width, PARAMS.box.height) / 2.0
+
+
+@pytest.mark.parametrize("difficulty", [EASY, FULL], ids=["easy", "full"])
+def test_the_box_starts_clear_of_walls_and_obstacles(difficulty: Difficulty) -> None:
+    """Agents can only push, so the box starts at least `BOX_CLEARANCE` (two agent diameters) from every wall and obstacle,
+    whatever its orientation: a team can always get behind it."""
+    assert difficulty.box_clearance == scenarios.BOX_CLEARANCE == 1.0
+    for seed in range(300):
+        layout = scenarios.generate_layout(np.random.default_rng(seed), difficulty, 3, PARAMS)
+        assert _clearance(layout) >= 1.0 - 1e-9, f"seed {seed}: clearance {_clearance(layout):.3f}"
+        assert scenarios.box_clearance(layout, PARAMS) == pytest.approx(_clearance(layout), abs=1e-9)

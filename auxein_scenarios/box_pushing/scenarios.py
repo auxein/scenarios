@@ -1,4 +1,4 @@
-"""The scenario generator (design doc §4): seeded layouts as Auxein `ScenarioSet`s, with difficulty as a parameter.
+"""The scenario generator: seeded layouts as Auxein `ScenarioSet`s, with difficulty as a parameter.
 
 A scenario is drawn from its seed: obstacles, the box's pose, the target, and the agents' starting poses. **The whole layout is
 stored in the scenario's `params`** (JSON), so the world has no randomness of its own, the set's fingerprint covers the actual
@@ -11,7 +11,7 @@ layouts, and a set can be saved and inspected. The params of a scenario:
  "agents": [[x, y, heading], ...]}
 ```
 
-Generation runs once per set, on the host, with numpy and plain loops (design doc §2.2): it is not per step. A layout is
+Generation runs once per set, on the host, with numpy and plain loops: it is not per step, so speed does not matter here. A layout is
 **valid** if the box can reach the target and every agent can reach the box, checked by flood fills on a grid of
 `GRID` units: for the box with the obstacles and walls inflated by the box's circumscribed radius (so the check holds whatever
 the box's orientation, and is conservative), for the agents inflated by an agent's radius. An invalid draw is **rejected and the
@@ -22,7 +22,7 @@ whole layout redrawn** from the same stream; `attempts` records how many draws i
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import cast
 
 import numpy as np
@@ -37,17 +37,12 @@ from auxein_scenarios.box_pushing.world import Layout
 __all__ = [
     "BOX_CLEARANCE",
     "EASY",
-    "EASY_2",
     "FULL",
-    "FULL_2",
-    "GENERATORS",
     "GRID",
-    "LATEST",
     "Difficulty",
     "LayoutError",
     "box_clearance",
     "check_disjoint",
-    "difficulties",
     "generate_layout",
     "held_out_set",
     "is_valid",
@@ -75,19 +70,18 @@ class LayoutError(RuntimeError):
 
 @dataclass(frozen=True)
 class Difficulty:
-    """A difficulty level of the generator (design doc §4.2).
+    """A difficulty level of the generator.
 
     - `obstacles`: the inclusive range of the number of obstacles, each a circle or an axis-aligned rectangle with equal odds.
     - `box_target_distance`: the range of the distance from the box's centre to the target's.
     - `spawn_radius`: agents start within this distance of the box's surface; `None` scatters them across the arena.
-    - `circle_radius`, `rect_side`: the ranges of the obstacles' sizes. No side is thinner than an agent's diameter (design doc
-      §2.2), which keeps agents and the box from passing through one.
-    - `box_clearance`: the free space kept around the box's start (generator 2, design doc §4.2): the box's centre is at least
-      its circumscribed radius plus `box_clearance` from every wall and every obstacle's surface, so it holds whatever the
-      box's orientation, and agents (which can only push) can always get behind it. A layout that breaks it is redrawn: an
-      obstacle too close is drawn again, a box too close to a wall redraws the layout. `None` is generator 1, before M2b: the
-      box's circumscribed circle keeps only `CLEARANCE` (0.3) from obstacles and 0.5 from walls, less than an agent's
-      diameter, so a box could start where no agent fits behind it.
+    - `circle_radius`, `rect_side`: the ranges of the obstacles' sizes. No side is thinner than an agent's diameter, which
+      keeps agents and the box from passing through one (a contact spring cannot hold a body inside a thin shape).
+    - `box_clearance`: the free space kept around the box's start: the box's centre is at least its circumscribed radius plus
+      `box_clearance` from every wall and every obstacle's surface, so it holds whatever the box's orientation, and agents
+      (which can only push) can always get behind it. A layout that breaks it is redrawn: an obstacle too close is drawn
+      again, a box too close to a wall redraws the layout. Without it a box could start where no agent fits behind it, and a
+      team would be judged on scenarios no team can solve.
     """
 
     name: str
@@ -96,7 +90,7 @@ class Difficulty:
     spawn_radius: float | None
     circle_radius: tuple[float, float] = (0.5, 1.5)
     rect_side: tuple[float, float] = (0.5, 4.0)
-    box_clearance: float | None = None
+    box_clearance: float = 1.0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -110,26 +104,13 @@ class Difficulty:
         }
 
 
-EASY = Difficulty("easy", obstacles=(0, 2), box_target_distance=(3.0, 5.0), spawn_radius=3.0)
-FULL = Difficulty("full", obstacles=(2, 6), box_target_distance=(6.0, 12.0), spawn_radius=None)
-"""Generator 1's difficulties (before M2b): no box clearance. Kept so that runs recorded with them stay reproducible."""
-
 BOX_CLEARANCE = 1.0
-"""Generator 2's box clearance (units): two agent diameters, so that agents can always get behind the box."""
-EASY_2 = replace(EASY, box_clearance=BOX_CLEARANCE)
-FULL_2 = replace(FULL, box_clearance=BOX_CLEARANCE)
+"""The box clearance (units): two agent diameters, so that agents can always get behind the box."""
 
-GENERATORS: dict[int, tuple[Difficulty, Difficulty]] = {1: (EASY, FULL), 2: (EASY_2, FULL_2)}
-"""The generator versions (design doc §4.2): their easy and full difficulties. A run's config names its version
-(`scenarios.generator`), so the sets of an old run are rebuilt bit for bit whatever the current default."""
-LATEST = 2
-
-
-def difficulties(generator: int) -> tuple[Difficulty, Difficulty]:
-    """The easy and full difficulties of a generator version."""
-    if generator not in GENERATORS:
-        raise ValueError(f"scenarios.generator must be one of {sorted(GENERATORS)}, got {generator}")
-    return GENERATORS[generator]
+EASY = Difficulty("easy", obstacles=(0, 2), box_target_distance=(3.0, 5.0), spawn_radius=3.0, box_clearance=BOX_CLEARANCE)
+"""Few obstacles, the box 3 to 5 units from the target, the agents spawned near the box: where a young team first scores."""
+FULL = Difficulty("full", obstacles=(2, 6), box_target_distance=(6.0, 12.0), spawn_radius=None, box_clearance=BOX_CLEARANCE)
+"""The task itself: more obstacles, a longer push, the agents scattered across the arena so they must find the box."""
 
 
 def _at(value: float) -> Floats:
@@ -222,7 +203,7 @@ def _agent_reachable(layout: Mapping[str, object], params: WorldParams) -> Mask:
 
 
 def is_valid(layout: Mapping[str, object], params: WorldParams) -> bool:
-    """The validity check (design doc §2.2): the box can reach the target, and every agent starts in free space connected to the
+    """The validity check: the box can reach the target, and every agent starts in free space connected to the
     box, not overlapping an obstacle, the box, a wall or another agent."""
     if not _box_reaches_target(layout, params):
         return False
@@ -255,7 +236,7 @@ def box_clearance(layout: Mapping[str, object], params: WorldParams) -> float:
 def _draw_obstacles(
     rng: np.random.Generator, difficulty: Difficulty, box: list[float], target: list[float], params: WorldParams
 ) -> tuple[list[list[float]], list[list[float]]] | None:
-    gap = CLEARANCE if difficulty.box_clearance is None else max(CLEARANCE, difficulty.box_clearance)
+    gap = max(CLEARANCE, difficulty.box_clearance)
     half, keep_box = params.arena.half, _box_radius(params) + gap
     keep_target = max(params.simulation.target_radius, _box_radius(params)) + CLEARANCE
     circles: list[list[float]] = []
@@ -331,9 +312,8 @@ def generate_layout(
         target = [box[0] + distance * math.cos(angle), box[1] + distance * math.sin(angle)]
         if max(abs(target[0]), abs(target[1])) > half - margin:
             continue
-        if difficulty.box_clearance is not None and max(abs(box[0]), abs(box[1])) > half - _box_radius(params) - difficulty.box_clearance:
-            continue  # generator 2: too close to a wall for agents to get behind the box (drawn after the target, so that
-            # generator 1's stream of draws is untouched)
+        if max(abs(box[0]), abs(box[1])) > half - _box_radius(params) - difficulty.box_clearance:
+            continue  # too close to a wall for agents to get behind the box
         obstacles = _draw_obstacles(rng, difficulty, box, target, params)
         if obstacles is None:
             continue
@@ -392,20 +372,28 @@ def training_set(
     params: WorldParams | None = None,
     *,
     seed: int = 1,
-    mix: Sequence[tuple[Difficulty, int]] = ((EASY, 8), (FULL, 24)),
+    mix: Sequence[tuple[Difficulty, int]] = ((EASY, 4), (FULL, 28)),
 ) -> ScenarioSet:
-    """The training set (design doc §4.2): by default 8 easy and 24 full scenarios, in that order, for a team of `agents`."""
+    """The training set: by default 4 easy and 28 full scenarios, in that order, for a team of `agents`. Easy scenarios give a
+    young team its first deliveries; full ones are the task, so most of the set is full."""
     return _set("box-pushing-training", mix, agents, params or WorldParams(), seed, "train")
 
 
 def held_out_set(
-    agents: int, params: WorldParams | None = None, *, seed: int = 2, count: int = 64, difficulty: Difficulty = FULL
+    agents: int,
+    params: WorldParams | None = None,
+    *,
+    seed: int = 2,
+    count: int = 64,
+    difficulty: Difficulty = FULL,
+    prefix: str = "held",
 ) -> ScenarioSet:
-    """A held-out set (design doc §4.3): `count` scenarios at full difficulty, never used in training.
+    """A set of scenarios never used in training: `count` of them at `difficulty` (full by default). A run's held-out set is
+    one, and so are the scenarios a brain is deployed on (`prefix` names their ids; the layouts depend only on the seed).
 
     Its layouts come from a stream of its own (another name than the training set's), so the two cannot share a layout even
     with the same seed; `check_disjoint` verifies it."""
-    return _set("box-pushing-held-out", ((difficulty, count),), agents, params or WorldParams(), seed, "held")
+    return _set("box-pushing-held-out", ((difficulty, count),), agents, params or WorldParams(), seed, prefix)
 
 
 def check_disjoint(*sets: ScenarioSet) -> None:
