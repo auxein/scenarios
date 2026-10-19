@@ -1,4 +1,4 @@
-"""Fitness (design doc §5): the per-episode score from the six raw measurements, and the Auxein `Aggregator` around it.
+"""Fitness: the per-episode score from the six raw measurements, and the Auxein `Aggregator` around it.
 
 The world returns raw measurements (`environment.MEASUREMENTS`), never a score; **the score lives here, in the aggregator**, so
 that a recorded run can be re-judged with other weights (`RunReader.reaggregate`) without re-simulating. Per episode, with `d₀`
@@ -39,7 +39,7 @@ DESCRIPTORS = ("success_rate", "progress", "approach", "max_pushers")
 
 @dataclass(frozen=True)
 class Weights:
-    """The weights of the per-episode score (design doc §5.1), and the floor of the progress term."""
+    """The weights of the per-episode score, and the floor of the progress term."""
 
     progress: float = 1.0
     delivery: float = 2.0

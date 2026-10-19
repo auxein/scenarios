@@ -1,6 +1,6 @@
-"""The visual theme of every video, gallery and chart the scenarios produce: monochrome silver on near-black.
+"""The visual theme of every video and chart the scenarios produce: monochrome silver on near-black.
 
-One place for the look, so that the demos of M1a, the milestone clips and the montage of M3 and the charts all match:
+One place for the look, so that the videos and the charts all match:
 
 - **Colour.** A near-black background and a strictly monochrome scale of whites, silvers and steel greys, with no accent
   colour. **State is shown with brightness, never with hue**: what is active (a moving box, an agent touching it) is bright

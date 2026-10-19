@@ -1,4 +1,4 @@
-"""Fitness (design doc §5): the per-episode score against hand computations, gathering against pushing, and the aggregator."""
+"""Fitness: the per-episode score against hand computations, gathering against pushing, and the aggregator."""
 
 import math
 
@@ -81,10 +81,11 @@ def test_weights_are_validated() -> None:
 
 
 def test_gathering_scores_less_than_moving_the_box_a_little(corner_backend: Backend) -> None:
-    """Design doc §5.1: the approach term must not dominate. Twelve agents that only gather around the box (all touching it,
-    approach 1, the most the term gives) against the push team in the same scenario for 50 steps (2.5 s), which moves the box
-    about a third of a unit, 4 % of the way. A push wins once its progress exceeds 0.1 × (the gatherers' approach − its own):
-    after 40 steps (1.4 % of the way, the back of the column still far from the box) it does not yet (design doc §5.3)."""
+    """The approach term must not dominate, or a team could score by gathering without pushing. Twelve agents that only gather
+    around the box (all touching it, approach 1, the most the term gives) against the push team in the same scenario for 50
+    steps (2.5 s), which moves the box about a third of a unit, 4 % of the way. A push wins once its progress exceeds
+    0.1 × (the gatherers' approach − its own): after 40 steps (1.4 % of the way, the back of the column still far from the
+    box) it does not yet."""
     r, half_long, half_short = PARAMS.agent.radius, PARAMS.box.width / 2.0, PARAMS.box.height / 2.0
     # the box faces x: its long faces at x = ±0.6, its ends at y = ±1
     ring = [[-(half_short + r), y, 0.0] for y in (-0.7, -0.2, 0.3, 0.8)] + [[half_short + r, y, math.pi] for y in (-0.7, -0.2, 0.3, 0.8)]

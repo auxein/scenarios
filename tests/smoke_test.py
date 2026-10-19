@@ -1,7 +1,7 @@
-"""The scaffold's smoke test: the pinned Auxein is installed, and its `MLPPolicy` acts for a team with the design doc's sizes.
+"""The smoke test: the pinned Auxein is installed, and its `MLPPolicy` acts for a team with the scenario's sizes.
 
-The sizes come from where they are defined: the observation from `sensors.observation_layout` (design doc §3.7), the brain
-from `environment.brain` (§3.6). Nothing is written out here, so a change of sensing changes this test with it.
+The sizes come from where they are defined: the observation from `sensors.observation_layout`, the brain from
+`environment.brain`. Nothing is written out here, so a change of sensing changes this test with it.
 """
 
 import json
@@ -51,7 +51,7 @@ def test_auxein_has_what_the_design_relies_on() -> None:
 
 def _act(backend: Backend) -> None:
     policy = brain()
-    # one hidden layer: its weights and biases, then the output layer's (MLPPolicy's genome layout, design doc §3.7)
+    # one hidden layer: its weights and biases, then the output layer's (MLPPolicy's genome layout)
     (hidden,) = HIDDEN
     assert policy.observation_size == OBSERVATION_SIZE
     assert policy.dim == OBSERVATION_SIZE * hidden + hidden + hidden * OUTPUTS + OUTPUTS

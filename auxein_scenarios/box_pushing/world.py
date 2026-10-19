@@ -1,8 +1,8 @@
-"""The physics core (design doc §2): the state of every world of a batch, and the step that advances them all at once.
+"""The physics core: the state of every world of a batch, and the step that advances them all at once.
 
 This is a **pure, batched physics core**, separate from Auxein's environment interface: `step(state, actions, layout, params)`
 returns the next `State` of every candidate × scenario × agent at once, from actions `(n, s, N, 2)` in `[-1, 1]` (thrust and
-turning). The `BatchedEnvironment` (M1b) wraps it, adding sensing and measurements; nothing here depends on sensors or networks,
+turning). The environment (`environment.py`) wraps it, adding sensing and measurements; nothing here depends on sensors or networks,
 so the physics is tested and watched with scripted controllers that read the true state (`scripted.py`).
 
 - **Arrays.** Everything is written against the Array API namespace of the state's arrays (numpy or torch, float64 or float32,
@@ -15,11 +15,11 @@ so the physics is tested and watched with scripted controllers that read the tru
 - **Integration.** Each episode step applies the actions for `substeps` physics substeps of `h = dt / substeps` with
   semi-implicit Euler: forces at the current positions, velocities updated first (drag, lateral damping and the turning lag
   implicitly, so they are stable at any rate), then positions from the new velocities.
-- **The box's friction** (design doc §2.4). At rest, the box stays at rest while the net force on it is below `F_s` and the net
+- **The box's friction.** At rest, the box stays at rest while the net force on it is below `F_s` and the net
   torque below `τ_s`. Moving, kinetic friction removes `F_k h / M` of its speed and `τ_k h / I` of its spin per substep, never
   reversing either (both are clamped at zero), and the spin also decays at the angular damping rate; it comes to rest again
   when it is slow, barely turning and no longer pushed beyond the static thresholds.
-- **Delivery** (design doc §4.4): at the end of a step, a scenario whose box centre is within the target radius is done. A done
+- **Delivery**: at the end of a step, a scenario whose box centre is within the target radius is done. A done
   scenario keeps its shape in the arrays and **stops changing**: its state is frozen by `where`, and its step count stops.
 - **Determinism.** For given inputs, backend, precision and device, the step gives the same numbers every time; and an entry's
   numbers do not depend on the rest of the batch or on how many obstacle slots the batch is padded to (`contacts.py`).
@@ -314,7 +314,7 @@ class Trajectory:
 
 
 class TrajectoryRecorder:
-    """A `Hook` that copies the states it is given to host numpy arrays, for rendering (design doc §2.9): the renderer draws
+    """A `Hook` that copies the states it is given to host numpy arrays, for rendering: the renderer draws
     exactly what the physics computed. Use `trajectory()` once the simulation is over."""
 
     _FIELDS = ("agent_x", "agent_y", "agent_heading", "box_x", "box_y", "box_angle", "box_at_rest", "done")

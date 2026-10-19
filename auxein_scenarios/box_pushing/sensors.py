@@ -1,4 +1,4 @@
-"""What each agent senses, local and in its own frame (design doc §3): the observation vector fed to the shared network.
+"""What each agent senses, local and in its own frame: the observation vector fed to the shared network.
 
 **The observation layout is defined here, once** (`observation_layout`): the named parts of the vector, their slices and sizes,
 derived from the sensing parameters (`config.SensingParams`), and the range of values each part takes. Everything else (the
@@ -66,7 +66,7 @@ class ObservationLayout:
 
     @property
     def groups(self) -> dict[str, slice]:
-        """The five groups of design doc §3: `target`, `rays`, `box`, `teammates`, `proprioception`."""
+        """The five groups of senses: `target`, `rays`, `box`, `teammates`, `proprioception`."""
         p = self.parts
         return {
             "target": slice(p["target_distance"].start, p["target_bearing"].stop),
@@ -132,7 +132,7 @@ def _ray_directions(sensing: SensingParams) -> tuple[np.ndarray, np.ndarray]:
 
 
 def sense(state: State, layout: Layout, params: WorldParams, sensing: SensingParams | None = None) -> Senses:
-    """What every agent senses in `state` (design doc §3), with the intermediate quantities (see `Senses`)."""
+    """What every agent senses in `state`, with the intermediate quantities (see `Senses`)."""
     sensing = sensing or SensingParams()
     backend = state.backend
     xp = backend.xp

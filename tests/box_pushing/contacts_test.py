@@ -224,7 +224,7 @@ def test_box_rects_obstacle_corner_into_box(backend: Backend) -> None:
 
 def test_box_rects_corner_to_corner_counts_both_corners(backend: Backend) -> None:
     """Corners overlapping each other: the box's corner is inside the square and the square's corner inside the box, and the
-    model counts both (design doc §2.6): the overlap [0.55, 1] × [0.5, 0.6] is pushed out twice through the shallow faces."""
+    model counts both: the overlap [0.55, 1] × [0.5, 0.6] is pushed out twice through the shallow faces."""
     b = box(backend)
     fx, fy, _ = host(
         backend,

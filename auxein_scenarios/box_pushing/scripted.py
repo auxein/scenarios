@@ -11,11 +11,11 @@ design and ignores obstacles.
 - `push(goal_x, goal_y)`: agents line up in assigned columns on the box's far side from the goal, then drive toward the goal,
   steering to stay on their line.
 
-And one that does **not** read the true state (M1b):
+And two that do **not** read the true state:
 
 - `ConstantPolicy`: fixed actions per agent, as a batch policy (for demos run through the environment's loop);
 - `SensesController`: a policy-like object (`act_batch(observations)`, like a brain) that sees **only the observation vector**
-  (design doc §3), a hand-written feasibility check for design doc §10.1.
+  a brain gets, a hand-written check that a memoryless team can do the task from these senses (and a baseline for brains).
 """
 
 import math
@@ -159,7 +159,7 @@ class ConstantPolicy:
 
 class SensesController:
     """A hand-written controller that sees **only what a brain sees**: the observation vector, read through
-    `sensors.observation_layout`, and nothing of the true state. A **feasibility check for design doc §10.1**, not a solution:
+    `sensors.observation_layout`, and nothing of the true state. A **feasibility check** for a memoryless brain, not a solution:
     if a memoryless controller can deliver some easy scenarios from these senses, the senses carry what the task needs and
     evolution can find it too; if it can do nothing, the senses are missing something.
 
@@ -172,9 +172,9 @@ class SensesController:
       line to the target. Otherwise it goes to the box's far side from the target, around the box if the box is in its way.
     - **Box out of range, but a ray sees it**: it turns toward that ray and drives.
     - **Nothing seen**: it **searches** by orbiting the target at `ORBIT` units, which passes within sensing range of any box the
-      generator places 6 to 12 units from the target (design doc §4.2). It uses the target's distance and bearing, which every
-      agent always has. Teammates are not used: a first version turned searching agents toward their teammates, and agents far
-      from the box trapped each other in small spinning clusters.
+      generator places 6 to 12 units from the target (the full difficulty's range). It uses the target's distance and bearing, which every
+      agent always has. Teammates are not used: searching agents turned toward their teammates trap each other, far from the
+      box, in small spinning clusters.
     - **Obstacles**: a wall or an obstacle close ahead (not the box) makes it slow down and turn toward the freer side.
 
     `n` and `backend` say which batch it acts for, as `BoxPushingWorld.run_batch` asks of a policy; `sensing` and `params` must
@@ -256,7 +256,7 @@ class SensesController:
         ray_angle = xp.reshape(ray_angle, nearest_on_box.shape)
 
         # searching: orbit the target at ORBIT units, counter-clockwise, which passes within sensing range of any box that starts
-        # 6 to 12 units from the target (design doc §4.2); beyond the orbit the agent heads in, inside it out
+        # 6 to 12 units from the target (the full difficulty's range); beyond the orbit the agent heads in, inside it out
         bearing = xp.atan2(one("target_bearing", 0), one("target_bearing", 1))
         drift = xp.clip(self.ORBIT_GAIN * (target_distance - self.ORBIT), -math.pi / 2, math.pi / 2)
         search = bearing + math.pi / 2 - drift
