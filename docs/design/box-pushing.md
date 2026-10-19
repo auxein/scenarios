@@ -1,6 +1,6 @@
 # Cooperative box-pushing: design
 
-**Status:** Draft for review · **Date:** 2026-10-19 · **Auxein:** `v0.3.3` · **Milestone:** M2b (box clearance, generator versions, 4 + 28 training scenarios, comparing runs)
+**Status:** Draft for review · **Date:** 2026-10-19 · **Auxein:** `v0.3.3` · **Milestone:** M2b (box clearance, generator versions, 4 + 28 training scenarios, comparing runs) and the second overnight run (§10.9)
 
 ---
 
@@ -516,15 +516,18 @@ report's evaluation for any held-out set.
     recommended looking first at what stops the team (the push, the search, the step limit); M2b instead changes only the
     data, so that the next run says whether better data alone closes the gap; the levers for the push and the search are
     kept for the round after.
-  - **The owner's second overnight run**, next: `configs/full.toml` (generator 2, 4 + 28), about 6.2 hours, then
-    `box-pushing showcase` on it and `box-pushing compare` of both overnight runs on its held-out set (§10.9).
-  - **Then:** M4 if the second run generalises (at least half of the held-out scenarios delivered); otherwise the next lever,
-    one at a time: the time-bonus weight for the slow push (§10.8: a crowd around the box, twice slower than the hand-written
-    controller), the sensing range for the wall-hugging search.
+  - **The owner's second overnight run** (done): `configs/full.toml` (generator 2, 4 + 28), 400 generations, 6.2 hours
+    (§10.9). Better data closed the generalisation gap (+0.24 to +0.06) and ended the wall-hugging, but the champion delivers
+    41 % of its held-out scenarios, below half and below the first champion's 47 % on the same layouts; it stopped improving at
+    generation 288.
+  - **Next: the time-bonus weight for the push** (`w_t`, §5.1), not M4 yet: the second run's champion rings the box and pushes
+    at half the hand-written controller's speed, and delivers none of the long pushes (§10.9). One lever at a time; the
+    sensing range for the search is no longer indicated (every layout is reached). M4 once a run delivers at least half of
+    its held-out scenarios.
 - **M3** (done): milestones, the held-out report with two baselines and a recommendation, milestone clips with honest
   labels, the sequence and grid montages, the charts, and `box-pushing showcase` (§7.1); run on the overnight run (§10.8).
-- **M4:** the CMA-ES comparison and polished clips for the website, once M2b's retrained run generalises (at least half of the
-  held-out scenarios delivered).
+- **M4:** the CMA-ES comparison and polished clips for the website, once a retrained run generalises (at least half of the
+  held-out scenarios delivered; the second overnight run delivers 41 %, §10.9).
 
 ---
 
@@ -834,12 +837,97 @@ are where a young team scores. In deliveries, **learning starts as before, and f
 25 M2a's champion delivered its 4 easy scenarios and none of its 12 full ones (mean full progress +0.10); M2b's delivers its
 4 easy ones and **1 of its 28 full ones** (+0.15). The population's cooperation (`max_pushers`) rises at the same pace.
 
-**The second overnight run** (`configs/full.toml`, generator 2, 4 + 28, 400 generations): *to be filled in a docs-only
-follow-up once the owner has run it*:
+**The second overnight run.** `configs/full.toml` on the owner's M4 Pro: 40 agents, a population of 100 with 100 children per
+generation, **4 easy and 28 full training scenarios from generator 2**, 900 steps, **400 generations**, torch float32 on Metal,
+seed 1 (`runs/full-20261018-232911`). **6.2 hours, 55.6 s per generation** (the pilot's 56 s; the start line's estimate held),
+40,000 evaluations, a **625 MB** recording (the pilot's estimate: about 0.7 GB).
 
-- `box-pushing showcase runs/full-<new>`: its report (held-out success, the gap, the baselines, the recommendation), its clips
-  (does the push change from a crowd around the box to a line behind it?), and the time it took;
-- `box-pushing compare runs/full-20261017-201610 runs/full-<new>` on the new run's held-out set (generator 2): the like-for-like
-  comparison of both overnight champions, against the bridge's 47 %;
-- the decision (§9): M4 if the new champion delivers at least half of its held-out scenarios, otherwise the next lever.
+**The learning curve** (`progress.csv`):
+
+| generation | best so far | generation's best | mean | median | mean success | mean `max_pushers` | champion: success, progress, `max_pushers` |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 | 0.079 | 0.079 | 0.026 | 0.023 | 0.000 | 1.6 | 0 %, +0.03, 4.2 |
+| 10 | 0.365 | 0.238 | 0.056 | 0.041 | 0.003 | 3.3 | 9 %, +0.09, 6.9 |
+| 25 | 0.648 | 0.341 | 0.065 | 0.040 | 0.006 | 3.5 | 16 %, +0.20, 6.8 |
+| 50 | 0.934 | 0.693 | 0.178 | 0.087 | 0.030 | 4.6 | 25 %, +0.27, 5.4 |
+| 100 | 1.308 | 1.241 | 0.167 | 0.066 | 0.024 | 4.4 | 34 %, +0.44, 6.8 |
+| 200 | 1.689 | 1.227 | 0.293 | 0.161 | 0.056 | 4.7 | 47 %, +0.50, 5.4 |
+| 300 | 1.887 | 1.475 | 0.328 | 0.176 | 0.061 | 4.9 | 53 %, +0.57, 7.9 |
+| 400 | **1.887** | 1.467 | 0.423 | 0.230 | 0.087 | 5.4 | **53 %, +0.57, 7.9** |
+
+The scores do not compare with the first run's (2.509): an eighth of the training set is easy, not a quarter. The champion
+improved 17 times, **the last at generation 288**: unlike the first run, this one **had stopped improving**, with a plateau of
+112 generations to the end (the first run's longest was 76). The population kept moving (the mean score 0.33 to 0.42, the
+median between 0.10 and 0.33 over the last 50 generations, the mean `max_pushers` 4.9 to 5.4) without finding a better
+champion. The champion delivers **17 of 32 training scenarios: all 4 easy and 13 of the 28 full**.
+
+**The held-out report** (`box-pushing report`, 64 full-difficulty scenarios of generator 2 never seen in training, Metal):
+
+| | training score | easy delivered | full delivered | held-out delivered | held-out progress | held-out `max_pushers` | delivery step (median) | gap |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| generation 1 | 0.079 | 0/4 | 0/28 | 0/64 | +0.01 | 3.4 | | +0.00 |
+| generation 2 | 0.244 | 2/4 | 0/28 | 0/64 | +0.03 | 5.3 | | +0.00 |
+| generation 10 | 0.365 | 3/4 | 0/28 | 0/64 | +0.03 | 6.2 | | +0.00 |
+| generation 20 | 0.426 | 4/4 | 0/28 | 0/64 | +0.04 | 6.1 | | +0.00 |
+| generation 50 | 0.934 | 4/4 | 4/28 (14 %) | 1/64 (2 %) | +0.17 | 4.7 | 831 | +0.13 |
+| generation 100 | 1.308 | 4/4 | 7/28 (25 %) | 5/64 (8 %) | +0.37 | 6.5 | 877 | +0.17 |
+| generation 200 | 1.689 | 4/4 | 11/28 (39 %) | 21/64 (33 %) | +0.43 | 5.3 | 730 | +0.06 |
+| **generation 400** | **1.887** | **4/4** | **13/28 (46 %)** | **26/64 (41 %)** | **+0.56** | 7.6 | 746 | **+0.06** |
+| *20 random brains* | 0.025 | 0/80 | 0/560 | 0/1,280 | +0.00 | 0.9 | | |
+| *senses-only controller* | 2.027 | 4/4 | 13/28 (46 %) | 31/64 (48 %) | +0.65 | 3.3 | 392 | −0.02 |
+
+- **The gap closed; the success did not rise.** With 28 full layouts the generalisation gap peaks at +0.17 (generation 100)
+  and falls to **+0.06** by generation 200, where it stays: the champion keeps 88 % of its full-training success on unseen
+  layouts (the first run: +0.24, 63 %). More layouts stopped the champion learning the maps, as decision 7 expected. But its
+  training success fell with it (46 % of 28 full against 67 % of 12), and on unseen layouts it delivers **26 of 64 (41 %)**,
+  below half.
+- **The baselines.** Random brains deliver nothing. The hand-written senses-only controller delivers 31 of 64 at a median step of
+  392; the evolved team delivers 26 at 746: **close to the controller, still half its speed**, as in the first run.
+- **Distance decides, more sharply than before**: 6–8 units **20 of 24 (83 %)**, 8–10 units 6 of 22 (27 %), 10–12 units **0 of
+  18**. The undelivered ones end 40 % of the way on average. Short pushes are now nearly solved; long ones are not done once.
+- **Two held-out layouts barely moved** (`held-0055`, `held-0059`, progress under 5 %): 4 agents touch the box in both, so they
+  are reached but not pushed, not unpushable layouts.
+
+**Both overnight champions on one set** (`box-pushing compare runs/full-20261017-201610 runs/full-20261018-232911`: the new
+run's held-out set, generator 2, seed 2, the same 64 layouts as the bridge; Metal, 2.6 minutes):
+
+| run | trained on | delivered | progress | `max_pushers` | delivery step (median) | 6–8 units | 8–10 | 10–12 | its own training: full delivered |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| first overnight (§10.8) | generator 1, 4 + 12 | **30/64 (47 %)** | +0.66 | 6.3 | 690 | 17/24 | 11/22 | 2/18 | 67 % |
+| second overnight | generator 2, 4 + 28 | 26/64 (41 %) | +0.56 | 7.6 | 746 | **20/24** | 6/22 | 0/18 | 46 % |
+| *senses-only controller* | | 31/64 (48 %) | +0.65 | 3.3 | 392 | 15/24 | 8/22 | 8/18 | 46 % |
+
+- **The new champion does not beat the bridge's 47 %.** On the very layouts it was built for, the old champion (trained on
+  fewer, partly unpushable layouts) still delivers four more. The bridge's number reproduces exactly (30 of 64, median step 690
+  against 689.5 here), so the comparison is like for like.
+- **They differ by distance**: the new champion is better on short pushes (20 against 17) and worse on everything longer (6
+  against 11, 0 against 2). It gathers more of the team at the box (`max_pushers` 7.6 against 6.3) and pushes slower (746
+  against 690). Better data alone made a team that finds the box and generalises, not one that pushes faster.
+
+**What the clips show** (the eight milestone clips, both montages):
+
+- **No wall- or obstacle-hugging**, at any milestone: the rows of agents along the top wall and the obstacles' edges in the
+  first run's clips (§10.8) are gone, and so are the layouts never moved.
+- **The team goes to the target, then to the box.** From generation 50 to 200 a large part of the team gathers **at the
+  target** and waits there, while a smaller group pushes the box (the clips' `train-0004` and `held-0001` at step 720). By
+  generation 400 nearly the whole team is at the box, a few agents still circling the target. The search is solved: every
+  layout is reached.
+- **The push is still a crowd, and a tighter one.** The final team **rings the box on all sides** (the clips' `held-0000` at
+  steps 600 to 900: some 30 agents in a closed ring, 2 or 3 touching at a time, the box creeping), not a line behind it. Agents
+  on the leading side push against the travel, which is why the push is slow and the long ones run out of time.
+- **No ramming and no traps** (§10.1, §10.2), as before: the box moves only with a crowd at it.
+- **Time running out**: the undelivered episodes end with the box partway (40 % on average), none of the long pushes finishing.
+
+**How long it took** (`box-pushing showcase`, on the M4 Pro, Metal for the simulation): the report **137 s** (eight champions
+and the baselines on twice as many training scenarios as the first run's), the eight milestone clips **520 s**, the sequence
+montage **305 s**, the grid montage **62 s**, the charts under a second: about **17 minutes** in all; `compare` 2.6 minutes.
+
+**The recommendation.** The report's rule (decision 7) says *limited*: held-out success 41 % (below half), gap +0.06 (well within
+0.25), so **not more scenarios: what stops the team on full scenarios**. (Its text still names that step "M2b", the name it had
+when the report was written at M3; the step is now the next lever.) §9's rule for this run says the same: below half, so **not
+M4 yet; the next lever, one at a time**. The clips choose which: the search no longer limits the team (no wall-hugging, every
+layout reached), the push does (a ring around the box, half the controller's speed, no long push delivered). So the next lever
+is **the time-bonus weight for the push** (`w_t`, §5.1, `[fitness] time`), which pays a team for delivering sooner and so for pushing from behind; the
+sensing range for the search is no longer indicated. The plateau from generation 288 says that a longer run of the same
+setup would not get there: the change has to be in what is rewarded.
 
