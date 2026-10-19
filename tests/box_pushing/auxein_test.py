@@ -130,11 +130,12 @@ def test_a_candidate_alone_or_in_a_batch(corner_backend: Backend, genomes: Any) 
 
 
 def test_scenario_order_does_not_change_a_scenarios_result(corner_backend: Backend, genomes: Any) -> None:
+    """Up to the last bit on numpy: reordering the scenarios moves each one's agents in memory, and on x86 numpy's vectorised
+    mean over the agents can round a different last bit depending on where a row starts (1e-16 in `approach`)."""
     world = BoxPushingWorld(steps=80)
     forward = measurements(corner_backend, world, genomes, SET)
     reversed_set = ScenarioSet.from_params([s.params for s in reversed(SET)], seed=1, ids=list(reversed(SET.ids)))
     backward = measurements(corner_backend, world, genomes, reversed_set)
     for name in MEASUREMENTS:
-        np.testing.assert_allclose(
-            backward[name][:, ::-1], forward[name], rtol=tolerance(corner_backend), atol=tolerance(corner_backend), err_msg=name
-        )
+        rtol = tolerance(corner_backend) or 1e-12
+        np.testing.assert_allclose(backward[name][:, ::-1], forward[name], rtol=rtol, atol=tolerance(corner_backend), err_msg=name)
