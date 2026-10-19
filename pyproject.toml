@@ -9,16 +9,21 @@ authors = [{ name = "Davide Palmisano", email = "dpalmisano@gmail.com" }]
 requires-python = ">=3.11"
 # the scenarios are run from this repository, never published: the classifier makes PyPI refuse an accidental upload
 classifiers = ["Private :: Do Not Upload"]
-dependencies = ["auxein", "numpy>=1.26", "array-api-compat>=1.9"]
+dependencies = [
+    "auxein",
+    "numpy>=1.26",
+    "array-api-compat>=1.9",
+    "safetensors>=0.4",
+]
 
 [project.scripts]
-box-pushing = "auxein_scenarios.box_pushing.cli:main"
+scenarios = "auxein_scenarios.common.cli:main"
 
 [project.optional-dependencies]
 # torch is named directly, not only through auxein's extra, because uv applies `[tool.uv.sources]` (the CPU-only index below)
 # to direct dependencies only
 torch = ["auxein[torch]", "torch>=2.4"]
-# pycma, for the CMA-ES comparison run (design doc §6)
+# pycma, for comparing the GA with CMA-ES
 cma = ["auxein[cma]"]
 
 [dependency-groups]
@@ -28,7 +33,7 @@ dev = [
     "ruff>=0.6",
     "pyright>=1.1.380",
 ]
-# Video work (design doc §7). imageio-ffmpeg ships a static ffmpeg binary in its wheel (macOS arm64 and Linux x86-64), which
+# Videos and charts. imageio-ffmpeg ships a static ffmpeg binary in its wheel (macOS arm64 and Linux x86-64), which
 # matplotlib's FFMpegWriter is pointed at, so no system ffmpeg is needed: `uv sync` alone is enough on a Mac and in CI.
 render = [
     "matplotlib>=3.9",
@@ -42,7 +47,7 @@ default-groups = ["dev", "render"]
 # Every resolution must contain wheels for x86_64 Linux (CI), as in Auxein.
 required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
-# Committed code always depends on a released Auxein tag (CLAUDE.md, "Working on Auxein from this repository"); to move to a
+# Committed code always depends on a released Auxein tag, so that every run can be reproduced from a published Auxein; to move to a
 # newer one, change `tag` and run `uv lock --upgrade-package auxein`.
 # On Linux (CI) torch comes from PyTorch's CPU-only index, as in Auxein: the default PyPI wheels pull in about 3 GB of CUDA
 # libraries that the tests never use. Other platforms keep the PyPI wheels (macOS wheels include Metal/MPS support).
