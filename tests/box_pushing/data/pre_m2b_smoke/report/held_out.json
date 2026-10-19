@@ -1,0 +1,145 @@
+{
+  "format": 1,
+  "scenarios_fingerprint": "736a43d0b39f6e08b233b45c744df5bbdf402e27afb67f8a62a6739ee516ebd8",
+  "evaluator": "EpisodeEvaluator(environment=BoxPushingWorld({\"sensing\":{\"range\":5.0,\"ray_range\":null,\"rays\":12,\"sectors\":8},\"steps\":200,\"world\":{\"agent\":{\"lateral_damping\":20.0,\"mass\":1.0,\"max_speed\":1.5,\"max_thrust\":2.0,\"max_turn_rate\":3.141592653589793,\"radius\":0.25,\"reverse_factor\":0.5,\"turn_time_constant\":0.1},\"arena\":{\"size\":20.0},\"box\":{\"height\":1.2,\"mass\":4.0,\"width\":2.0},\"contact\":{\"box_stiffness\":2000.0,\"damping_ratio\":0.3,\"stiffness\":200.0},\"friction\":{\"angular_damping\":2.0,\"k\":4,\"kinetic_ratio\":0.9,\"margin\":0.5,\"rest_speed\":0.01,\"rest_spin\":0.01,\"torque_radius_factor\":0.16666666666666666},\"simulation\":{\"dt\":0.05,\"max_steps\":200,\"substeps\":2,\"target_radius\":1.5}}}), decoder=MLPPolicy(observation_size=43, hidden=(32,), outputs=2, activation='tanh', output='tanh'), aggregator=Aggregator(objectives={'score': mean(<episode_score(progress=1.0, delivery=2.0, time=1.0, approach=0.1, progress_floor=-1.0, max_steps=200)>)}, descriptors={'success_rate': mean('delivered'), 'progress': mean(<episode_progress(floor=-1.0)>), 'approach': mean('approach'), 'max_pushers': mean('max_pushers')}), role='team', scenarios=4:736a43d0b39f6e08)",
+  "candidates": [
+    {
+      "candidate_id": 1,
+      "status": "ok",
+      "objectives": {
+        "score": 0.012944102831537272
+      },
+      "constraints": {},
+      "descriptors": {
+        "success_rate": 0.0,
+        "progress": 9.792381590417505e-06,
+        "approach": 0.1293431044994685,
+        "max_pushers": 0.25
+      },
+      "error": null,
+      "scenarios": [
+        {
+          "scenario_id": "held-0000",
+          "status": "ok",
+          "measurements": {
+            "approach": 0.14338061480786185,
+            "delivered": 0.0,
+            "final_distance": 10.969891684318378,
+            "initial_distance": 10.970321386611127,
+            "max_pushers": 1.0,
+            "steps": 200.0
+          },
+          "error": null
+        },
+        {
+          "scenario_id": "held-0001",
+          "status": "ok",
+          "measurements": {
+            "approach": 0.17970932626944985,
+            "delivered": 0.0,
+            "final_distance": 6.827483750810381,
+            "initial_distance": 6.827483750810381,
+            "max_pushers": 0.0,
+            "steps": 200.0
+          },
+          "error": null
+        },
+        {
+          "scenario_id": "held-0002",
+          "status": "ok",
+          "measurements": {
+            "approach": 0.13547906880470353,
+            "delivered": 0.0,
+            "final_distance": 8.6628241892466,
+            "initial_distance": 8.6628241892466,
+            "max_pushers": 0.0,
+            "steps": 200.0
+          },
+          "error": null
+        },
+        {
+          "scenario_id": "held-0003",
+          "status": "ok",
+          "measurements": {
+            "approach": 0.05880340811585888,
+            "delivered": 0.0,
+            "final_distance": 9.27231005351152,
+            "initial_distance": 9.27231005351152,
+            "max_pushers": 0.0,
+            "steps": 200.0
+          },
+          "error": null
+        }
+      ]
+    },
+    {
+      "candidate_id": 5,
+      "status": "ok",
+      "objectives": {
+        "score": 0.01277031990253223
+      },
+      "constraints": {},
+      "descriptors": {
+        "success_rate": 0.0,
+        "progress": 0.0,
+        "approach": 0.1277031990253223,
+        "max_pushers": 0.25
+      },
+      "error": null,
+      "scenarios": [
+        {
+          "scenario_id": "held-0000",
+          "status": "ok",
+          "measurements": {
+            "approach": 0.14445621802381564,
+            "delivered": 0.0,
+            "final_distance": 10.970321386611127,
+            "initial_distance": 10.970321386611127,
+            "max_pushers": 1.0,
+            "steps": 200.0
+          },
+          "error": null
+        },
+        {
+          "scenario_id": "held-0001",
+          "status": "ok",
+          "measurements": {
+            "approach": 0.17823411385850896,
+            "delivered": 0.0,
+            "final_distance": 6.827483750810381,
+            "initial_distance": 6.827483750810381,
+            "max_pushers": 0.0,
+            "steps": 200.0
+          },
+          "error": null
+        },
+        {
+          "scenario_id": "held-0002",
+          "status": "ok",
+          "measurements": {
+            "approach": 0.13057423835097892,
+            "delivered": 0.0,
+            "final_distance": 8.6628241892466,
+            "initial_distance": 8.6628241892466,
+            "max_pushers": 0.0,
+            "steps": 200.0
+          },
+          "error": null
+        },
+        {
+          "scenario_id": "held-0003",
+          "status": "ok",
+          "measurements": {
+            "approach": 0.05754822586798566,
+            "delivered": 0.0,
+            "final_distance": 9.27231005351152,
+            "initial_distance": 9.27231005351152,
+            "max_pushers": 0.0,
+            "steps": 200.0
+          },
+          "error": null
+        }
+      ]
+    }
+  ]
+}

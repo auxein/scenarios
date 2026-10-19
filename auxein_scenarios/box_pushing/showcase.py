@@ -29,8 +29,8 @@ import numpy as np
 from auxein.random import RandomStream
 from auxein.recording.reader import open_run
 
+from auxein_scenarios.box_pushing import compare, train
 from auxein_scenarios.box_pushing import report as held_out_report
-from auxein_scenarios.box_pushing import train
 from auxein_scenarios.box_pushing.config import TrainingConfig, load_config
 from auxein_scenarios.box_pushing.environment import BoxPushingWorld, brain
 from auxein_scenarios.box_pushing.milestones import Milestone, find_milestones
@@ -51,6 +51,7 @@ __all__ = [
     "montage",
     "resolve_showcase",
     "showcase",
+    "showcase_runs",
 ]
 
 CLIPS = "clips"
@@ -366,3 +367,25 @@ def showcase(
     timed("charts", lambda: charts(run, out=out))
     out(f"done: the report in {run / held_out_report.REPORT}, clips in {run / CLIPS}, charts in {run / CHARTS}")
     return seconds
+
+
+def showcase_runs(
+    run_dirs: Sequence[str | Path],
+    *,
+    generations: Sequence[int] | None = None,
+    showcase_tokens: Sequence[str] | None = None,
+    exploit: str | None = None,
+    size: tuple[int, int] = (1920, 1080),
+    out: Print = print,
+) -> Path | None:
+    """`showcase` on each run, then, with more than one, `compare` of their final champions on the newest run's held-out set
+    (written under its `report/`); returns where the comparison is, if there is one."""
+    for run in run_dirs:
+        out(f"=== {run}")
+        showcase(run, generations=generations, showcase_tokens=showcase_tokens, exploit=exploit, size=size, out=out)
+    if len(run_dirs) < 2:
+        return None
+    out("=== compare")
+    target = compare.write_comparison(compare.build_comparison(run_dirs, out=out))
+    out(str(target / compare.MARKDOWN_FILE))
+    return target

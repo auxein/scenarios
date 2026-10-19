@@ -1,0 +1,93 @@
+kind,name,generation,candidate_id,scenario_id,distance,obstacles,ok,delivered,steps,progress,max_pushers,score
+champion,generation 1,1,1,held-0000,10.970,5,1,0,200,0.000039,1,0.014377
+champion,generation 1,1,1,held-0001,6.827,3,1,0,200,0.000000,0,0.017971
+champion,generation 1,1,1,held-0002,8.663,6,1,0,200,0.000000,0,0.013548
+champion,generation 1,1,1,held-0003,9.272,5,1,0,200,0.000000,0,0.005880
+champion,generation 2,2,5,held-0000,10.970,5,1,0,200,0.000000,1,0.014446
+champion,generation 2,2,5,held-0001,6.827,3,1,0,200,0.000000,0,0.017823
+champion,generation 2,2,5,held-0002,8.663,6,1,0,200,0.000000,0,0.013057
+champion,generation 2,2,5,held-0003,9.272,5,1,0,200,0.000000,0,0.005755
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,0,0.015774
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,1,0.024254
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.014909
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.005144
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,0,0.013459
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.015600
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.011658
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.005526
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,0,0.014037
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.015946
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.011793
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.005486
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,-0.000033,1,0.023385
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.021392
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,-0.000198,1,0.015419
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.013838
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.001552,1,0.016827
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.004536,1,0.025581
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.015977
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.007255
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000118,1,0.014506
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.017844
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.013184
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.005966
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,1,0.018645
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,1,0.018423
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,1,0.016625
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.008248
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,0,0.013845
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.016175
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.011829
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.005310
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,0,0.013522
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.015674
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.011229
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.005247
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,0,0.013287
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.015410
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.011253
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.005296
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,1,0.015536
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.018802
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.014065
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.005487
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,1,0.016028
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.017872
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.016431
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.007150
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,1,0.014990
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.016681
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.012103
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.006138
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,1,0.015099
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.017189
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.012797
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.006517
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,1,0.016833
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.020500
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.015945
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.011284
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,1,0.013425
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.015751
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.011501
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.005181
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,1,0.017692
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.017224
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.012102
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.006489
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,0,0.013041
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.015581
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.011250
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.005175
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,1,0.013805
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.016984
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.011935
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.005389
+random brains,20 random brains,,,held-0000,10.970,5,1,0,200,0.000000,0,0.013922
+random brains,20 random brains,,,held-0001,6.827,3,1,0,200,0.000000,0,0.015837
+random brains,20 random brains,,,held-0002,8.663,6,1,0,200,0.000000,0,0.011446
+random brains,20 random brains,,,held-0003,9.272,5,1,0,200,0.000000,0,0.005364
+senses only,senses-only controller,,,held-0000,10.970,5,1,0,200,0.010761,2,0.081746
+senses only,senses-only controller,,,held-0001,6.827,3,1,0,200,0.033482,2,0.074884
+senses only,senses-only controller,,,held-0002,8.663,6,1,0,200,0.006847,2,0.027079
+senses only,senses-only controller,,,held-0003,9.272,5,1,0,200,0.006125,2,0.049674

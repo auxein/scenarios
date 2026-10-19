@@ -49,12 +49,16 @@ defaults). Run directories go to `runs/` (ignored by git). Training defaults to 
 (`uv sync --extra torch`); `smoke.toml` runs on numpy.
 
 ```
-uv run box-pushing train configs/smoke.toml                   # a few seconds, numpy: a first try
-uv run box-pushing train configs/full.toml                    # the overnight run: 40 agents, population 100, 400 generations
-uv run box-pushing watch runs/full-<timestamp>                # the best brain so far, as MP4 (safe while it trains)
-uv run box-pushing train --resume runs/full-<timestamp>       # after Ctrl-C (which stops after the current generation)
-uv run box-pushing train --resume runs/full-<timestamp> --generations 600   # extend it
+uv run box-pushing train configs/smoke.toml                               # a few seconds, numpy: a first try
+uv run --extra torch box-pushing train configs/full.toml                  # the overnight run: about 6.2 hours on an M4
+uv run --extra torch box-pushing watch runs/full-<timestamp>              # the best brain so far, as MP4 (safe while it trains)
+uv run --extra torch box-pushing train --resume runs/full-<timestamp>     # after Ctrl-C (which stops after the current generation)
+uv run --extra torch box-pushing train --resume runs/full-<timestamp> --generations 600   # extend it
 ```
+
+The presets use generator 2 of the scenarios (the box starts clear of walls and obstacles) and 4 easy + 28 full training
+scenarios. A config file without `[scenarios] generator` means generator 1, the generator before M2b, so runs recorded before
+it rebuild exactly their scenarios.
 
 `runs/<run>/progress.csv` is rewritten after every generation (best and mean score, success rate, `max_pushers`...), so a
 run can be charted while it goes on.
@@ -75,6 +79,13 @@ uv run --extra torch box-pushing report runs/full-<timestamp>       # report/: c
 uv run --extra torch box-pushing milestones runs/full-<timestamp>   # clips/milestones/gen-<k>.mp4, one per milestone
 uv run --extra torch box-pushing montage runs/full-<timestamp>      # clips/montage-sequence.mp4 (--layout grid: side by side)
 uv run --extra torch box-pushing charts runs/full-<timestamp>       # charts/: fitness, delivery, cooperation, generalisation
+```
+
+To compare runs (e.g. two overnight runs, or a GA and a CMA-ES run) on one common held-out set, each champion in its own world:
+
+```
+uv run --extra torch box-pushing compare runs/full-<old> runs/full-<new>        # on the newest run's held-out set
+uv run --extra torch box-pushing showcase runs/full-<old> runs/full-<new>       # both showcases, then the comparison
 ```
 
 Milestones are generations 1, 2, 5, 10, 20, 50, 100, 200, ... and the last (`--generations 1,50,400` to choose); clips show the

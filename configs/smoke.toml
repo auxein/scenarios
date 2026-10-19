@@ -12,6 +12,7 @@ agents = 10
 easy = 2
 full = 2
 held_out = 4
+generator = 2
 
 [strategy]
 population = 10

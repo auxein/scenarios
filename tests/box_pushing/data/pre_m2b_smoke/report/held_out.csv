@@ -1,0 +1,5 @@
+kind,name,generation,candidate_id,train_episodes,train_score,train_success,train_easy_success,train_full_success,train_progress,train_max_pushers,held_episodes,held_failed,held_delivered,held_score,held_success,held_progress,held_max_pushers,held_delivery_steps_median,gap
+champion,generation 1,1,1,4,0.048002,0.000000,0.000000,0.000000,-0.000094,0.250000,4,0,0,0.012944,0.000000,0.000010,0.250000,,0.000000
+champion,generation 2,2,5,4,0.048447,0.000000,0.000000,0.000000,0.000000,0.250000,4,0,0,0.012770,0.000000,0.000000,0.250000,,0.000000
+random brains,20 random brains,,,80,0.045752,0.000000,0.000000,0.000000,-0.000614,0.550000,80,0,0,0.013266,0.000000,0.000075,0.212500,,0.000000
+senses only,senses-only controller,,,4,0.184513,0.000000,0.000000,0.000000,0.111962,2.250000,4,0,0,0.058346,0.000000,0.014304,2.000000,,0.000000

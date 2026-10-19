@@ -22,7 +22,7 @@ whole layout redrawn** from the same stream; `attempts` records how many draws i
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 import numpy as np
@@ -35,12 +35,19 @@ from auxein_scenarios.box_pushing.config import WorldParams
 from auxein_scenarios.box_pushing.world import Layout
 
 __all__ = [
+    "BOX_CLEARANCE",
     "EASY",
+    "EASY_2",
     "FULL",
+    "FULL_2",
+    "GENERATORS",
     "GRID",
+    "LATEST",
     "Difficulty",
     "LayoutError",
+    "box_clearance",
     "check_disjoint",
+    "difficulties",
     "generate_layout",
     "held_out_set",
     "is_valid",
@@ -75,6 +82,12 @@ class Difficulty:
     - `spawn_radius`: agents start within this distance of the box's surface; `None` scatters them across the arena.
     - `circle_radius`, `rect_side`: the ranges of the obstacles' sizes. No side is thinner than an agent's diameter (design doc
       §2.2), which keeps agents and the box from passing through one.
+    - `box_clearance`: the free space kept around the box's start (generator 2, design doc §4.2): the box's centre is at least
+      its circumscribed radius plus `box_clearance` from every wall and every obstacle's surface, so it holds whatever the
+      box's orientation, and agents (which can only push) can always get behind it. A layout that breaks it is redrawn: an
+      obstacle too close is drawn again, a box too close to a wall redraws the layout. `None` is generator 1, before M2b: the
+      box's circumscribed circle keeps only `CLEARANCE` (0.3) from obstacles and 0.5 from walls, less than an agent's
+      diameter, so a box could start where no agent fits behind it.
     """
 
     name: str
@@ -83,6 +96,7 @@ class Difficulty:
     spawn_radius: float | None
     circle_radius: tuple[float, float] = (0.5, 1.5)
     rect_side: tuple[float, float] = (0.5, 4.0)
+    box_clearance: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -92,11 +106,30 @@ class Difficulty:
             "spawn_radius": self.spawn_radius,
             "circle_radius": list(self.circle_radius),
             "rect_side": list(self.rect_side),
+            "box_clearance": self.box_clearance,
         }
 
 
 EASY = Difficulty("easy", obstacles=(0, 2), box_target_distance=(3.0, 5.0), spawn_radius=3.0)
 FULL = Difficulty("full", obstacles=(2, 6), box_target_distance=(6.0, 12.0), spawn_radius=None)
+"""Generator 1's difficulties (before M2b): no box clearance. Kept so that runs recorded with them stay reproducible."""
+
+BOX_CLEARANCE = 1.0
+"""Generator 2's box clearance (units): two agent diameters, so that agents can always get behind the box."""
+EASY_2 = replace(EASY, box_clearance=BOX_CLEARANCE)
+FULL_2 = replace(FULL, box_clearance=BOX_CLEARANCE)
+
+GENERATORS: dict[int, tuple[Difficulty, Difficulty]] = {1: (EASY, FULL), 2: (EASY_2, FULL_2)}
+"""The generator versions (design doc §4.2): their easy and full difficulties. A run's config names its version
+(`scenarios.generator`), so the sets of an old run are rebuilt bit for bit whatever the current default."""
+LATEST = 2
+
+
+def difficulties(generator: int) -> tuple[Difficulty, Difficulty]:
+    """The easy and full difficulties of a generator version."""
+    if generator not in GENERATORS:
+        raise ValueError(f"scenarios.generator must be one of {sorted(GENERATORS)}, got {generator}")
+    return GENERATORS[generator]
 
 
 def _at(value: float) -> Floats:
@@ -210,10 +243,20 @@ def is_valid(layout: Mapping[str, object], params: WorldParams) -> bool:
     return all(bool(reachable[_cell(float(ax), float(ay), params)]) for ax, ay in zip(x, y, strict=True))
 
 
+def box_clearance(layout: Mapping[str, object], params: WorldParams) -> float:
+    """How much free space a layout keeps around its box's start: the distance from the box's centre to the nearest wall or
+    obstacle surface, less the box's circumscribed radius (so it holds whatever the box's orientation)."""
+    box = cast("list[float]", layout["box"])
+    x, y = _at(box[0]), _at(box[1])
+    walls = params.arena.half - max(abs(box[0]), abs(box[1]))
+    return float(min(walls, float(_obstacle_distance(x, y, layout)))) - _box_radius(params)
+
+
 def _draw_obstacles(
     rng: np.random.Generator, difficulty: Difficulty, box: list[float], target: list[float], params: WorldParams
 ) -> tuple[list[list[float]], list[list[float]]] | None:
-    half, keep_box = params.arena.half, _box_radius(params) + CLEARANCE
+    gap = CLEARANCE if difficulty.box_clearance is None else max(CLEARANCE, difficulty.box_clearance)
+    half, keep_box = params.arena.half, _box_radius(params) + gap
     keep_target = max(params.simulation.target_radius, _box_radius(params)) + CLEARANCE
     circles: list[list[float]] = []
     rects: list[list[float]] = []
@@ -288,6 +331,9 @@ def generate_layout(
         target = [box[0] + distance * math.cos(angle), box[1] + distance * math.sin(angle)]
         if max(abs(target[0]), abs(target[1])) > half - margin:
             continue
+        if difficulty.box_clearance is not None and max(abs(box[0]), abs(box[1])) > half - _box_radius(params) - difficulty.box_clearance:
+            continue  # generator 2: too close to a wall for agents to get behind the box (drawn after the target, so that
+            # generator 1's stream of draws is untouched)
         obstacles = _draw_obstacles(rng, difficulty, box, target, params)
         if obstacles is None:
             continue

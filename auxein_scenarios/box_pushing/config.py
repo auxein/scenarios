@@ -68,6 +68,7 @@ __all__ = [
     "BrainConfig",
     "BudgetConfig",
     "ConfigError",
+    "LEGACY_GENERATOR",
     "RunConfig",
     "ScenariosConfig",
     "SensingParams",
@@ -427,13 +428,19 @@ class BrainConfig:
 class ScenariosConfig:
     """The scenario sets (design doc §4.2–4.3): the training set, `easy` then `full` scenarios from `seed`, **fixed for the whole
     run** (parents and children are judged on the same scenarios); the held-out set, `held_out` full scenarios from
-    `held_out_seed`, used only after the run."""
+    `held_out_seed`, used only after the run.
+
+    `generator` is the version of the scenario generator (`scenarios.GENERATORS`): 2, the default, keeps the box clear of
+    walls and obstacles; 1 is the generator before M2b. **A config file without it means 1** (`parse_config`), unlike every
+    other missing key, which takes today's default: runs recorded before M2b have no `generator` in their `config.toml`, and
+    must rebuild exactly the scenarios they were trained and judged on."""
 
     easy: int = 4
-    full: int = 12
+    full: int = 28
     seed: int = 1
     held_out: int = 64
     held_out_seed: int = 2
+    generator: int = 2
 
     def __post_init__(self) -> None:
         if self.easy < 0 or self.full < 0 or self.easy + self.full < 1:
@@ -442,6 +449,8 @@ class ScenariosConfig:
             raise ValueError(f"scenarios.held_out must be at least 1, got {self.held_out}")
         if self.seed < 0 or self.held_out_seed < 0:
             raise ValueError("scenarios.seed and scenarios.held_out_seed must not be negative")
+        if self.generator not in (1, 2):
+            raise ValueError(f"scenarios.generator must be 1 (before M2b) or 2 (box clearance), got {self.generator}")
 
 
 @dataclass(frozen=True)
@@ -604,6 +613,10 @@ def _build(cls: type[Any], data: object, path: str) -> Any:
         raise ConfigError(message if path == "" or message.startswith(f"{path}.") else f"{path}: {message}") from None
 
 
+LEGACY_GENERATOR = 1
+"""What a config file without `scenarios.generator` means: the generator before M2b (see `ScenariosConfig`)."""
+
+
 def parse_config(text: str, *, name: str | None = None) -> TrainingConfig:
     """A `TrainingConfig` from TOML text; `name` is the default for its `name` (e.g. the file's name)."""
     try:
@@ -612,6 +625,9 @@ def parse_config(text: str, *, name: str | None = None) -> TrainingConfig:
         raise ConfigError(f"the config is not valid TOML: {error}") from None
     if name is not None and "name" not in data:
         data["name"] = name
+    scenarios = data.setdefault("scenarios", {})
+    if isinstance(scenarios, dict) and "generator" not in scenarios:
+        scenarios["generator"] = LEGACY_GENERATOR  # a config from before M2b: its scenarios are generator 1's
     return typing.cast("TrainingConfig", _build(TrainingConfig, data, ""))
 
 
