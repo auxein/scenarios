@@ -78,9 +78,14 @@ def _started(run: Path) -> datetime:
         return datetime.fromisoformat(str(reader.metadata["started_at"]))
 
 
+def _newest(runs: Sequence[Path]) -> Path:
+    """The run that started last; `started_at` has whole seconds, so a tie goes to the later run in the list."""
+    return max(enumerate(runs), key=lambda pair: (_started(pair[1]), pair[0]))[1]
+
+
 def _reference(runs: Sequence[Path], held_out: str | Path | None) -> Reference:
     if held_out is None:
-        newest = max(runs, key=_started)
+        newest = _newest(runs)
         return Reference(newest, load_config(newest / train.CONFIG_FILE), newest)
     source = Path(held_out)
     if source.is_dir():
@@ -208,7 +213,7 @@ def write_comparison(comparison: Comparison, out_dir: str | Path | None = None) 
     if out_dir is not None:
         target = Path(out_dir)
     else:
-        home = comparison.reference.run_dir or max((c.run_dir for c in comparison.runs), key=_started)
+        home = comparison.reference.run_dir or _newest([c.run_dir for c in comparison.runs])
         target = home / report.REPORT
     target.mkdir(parents=True, exist_ok=True)
     rows = _rows(comparison)

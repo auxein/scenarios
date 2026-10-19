@@ -2,6 +2,7 @@
 
 import csv
 import hashlib
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -111,3 +112,10 @@ def test_showcase_with_two_runs_reports_both_and_compares(runs: tuple[Path, Path
     assert target is not None and (target / compare.MARKDOWN_FILE).exists() and (target / compare.CSV_FILE).exists()
     assert called[:4] == ["milestone_clips old", "montage old", "montage old", "charts old"]
     assert showcase.showcase_runs([new], out=quiet) is None, "one run: no comparison"
+
+
+def test_runs_started_in_the_same_second_go_by_their_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`started_at` has whole seconds, so two runs can tie (two quick runs in a row, as in these tests): the later one given wins."""
+    same = datetime(2026, 10, 19, 12, 0, 0)
+    monkeypatch.setattr(compare, "_started", lambda _: same)
+    assert compare._newest([Path("a"), Path("b")]) == Path("b")  # pyright: ignore[reportPrivateUsage]
