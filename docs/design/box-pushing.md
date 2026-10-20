@@ -922,3 +922,48 @@ setup would not get there: the change has to be in what is rewarded.
 - **An interrupted run that is never resumed has no `held_out.csv` or charts**, only its `final.safetensors`: the held-out judging takes minutes, too long for Ctrl-C. Resuming it, even with no generation to add, writes them.
 - **On a GPU, a deployment's video can differ a little from its `results.csv`**: the video replays each brain on its first few scenarios in a smaller batch than the 64 judged, and float32 on Metal depends slightly on the batch's shape (§10.7). The video's captions are its own episodes' outcomes, so they never contradict what is shown; on numpy they match the CSV exactly.
 - **Brain files record the run's directory** (`provenance.run_dir`, an absolute path), useful to find the run again but a detail of the owner's machine in a file meant to be shared; the run's name is there too, so the path could be dropped.
+
+### 10.11 A sense of the box's course (M2c)
+
+M2c adds one sense, `box_course` (§3.9), and changes nothing else, so the next overnight run says what this sense alone does.
+
+**The pilot** (`configs/pilot.toml`: 4 + 28, 25 generations, Metal; `runs/pilot-m2c`) against M2b's pilot (§10.9), on the same
+training set: **23.5 minutes, 56 s per generation** (the same: two more inputs cost nothing measurable), a 40 MB recording.
+
+| generation | best so far (M2b → M2c) | generation's mean | champion's training success | mean `max_pushers` |
+|---:|---|---|---|---|
+| 1 | 0.079 → 0.050 | 0.026 → 0.025 | 0 % → 0 % | 1.6 → 1.2 |
+| 4 | 0.244 → 0.347 | 0.032 → 0.040 | 6 % → 9 % | 2.2 → 2.2 |
+| 9 | 0.365 → 0.347 | 0.053 → 0.043 | 9 % → 9 % | 3.4 → 2.6 |
+| 13 | 0.365 → 0.347 | 0.050 → 0.039 | 9 % → 9 % | 3.7 → 2.7 |
+| 25 | **0.648 → 0.459** | 0.065 → 0.062 | 16 % → 12 % | 3.5 → 3.1 |
+
+- **No early gain.** At generation 25 M2c's champion delivers all 4 easy scenarios and **none of the 28 full ones** (M2b's: 1),
+  with a mean full progress of +0.04 (M2b's: +0.15); its best score sat at 0.347 from generation 4 to 24. The population's mean
+  score and cooperation rise at about M2b's pace, a little lower.
+- **What 25 generations can say is little.** The genome is longer (1,538), so the first generation's random brains are other
+  brains, and a pilot is one seed: the curves are not paired, and both champions improve in a few jumps. The pilot checks that
+  training runs and learns with the new sense; the overnight run is the test.
+
+**The pilot's final brain on the comparison layouts** (`deploy runs/pilot-m2c/brains/final.safetensors --seed 2`: the 64 held-out
+layouts of §10.9, Metal, 2 minutes with the video):
+
+| | delivered | progress | `max_pushers` | delivery step (median) | 6–8 units | 8–10 | 10–12 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| M2c pilot, generation 25 | 0/64 | +0.03 | 4.5 | | 0/24 | 0/22 | 0/18 |
+| *senses-only controller* | 31/64 (48 %) | +0.65 | 3.3 | 392 | 15/24 | 8/22 | 8/18 |
+| for reference (§10.9): first overnight, second overnight | 30/64 (47 %), 26/64 (41 %) | +0.66, +0.56 | | 690, 746 | | | |
+
+The controller's 31 of 64 on Metal is §10.9's, as its pin says it must be. **The video**: the arrow from the box toward the target
+shows while agents are near it; in both scenarios shown, the two to four agents at the box are on its far side from the target,
+behind it with respect to the arrow, not around it, but too few to move it (four are needed), while others search, some in a
+row along the top wall as in M2a's pilot. A hint at a line behind the box, from one young brain; not evidence.
+
+**The third overnight run** (`configs/full.toml` with the new sense, 400 generations): *to be filled in a docs-only follow-up once
+the owner has run it*:
+
+- its `held_out.csv` and charts, and `deploy runs/full-<ts>/brains/final.safetensors --seed 2` against 41 %, 47 % and the
+  controller's 48 %, with success by distance (no long push was delivered by the second run);
+- the video of its snapshots together: **does the team line up behind the box, or still ring it?**;
+- `--agents 20` and `--agents 100` on its final brain;
+- the decision (§9): M4, `[brain] hidden = [32, 32]`, or the engineered sense.
