@@ -1,0 +1,20 @@
+{
+  "about": "The senses-only controller pinned with the code before the box's course was sensed (main at 91f974e), numpy float64, the default config: its measurements on the training set and on held-out seed 2, exact on the machine type pinned (macOS arm64); and the observation of the first 4 held-out layouts at step 0 (every platform) and after 49 steps of the controller (macOS arm64), every value to 9 significant digits.",
+  "machine": "darwin-arm64",
+  "training": {
+    "fingerprint": "6ae2c2109d7ce3194ecdbb8bde15a69886bc5376e97e56c7a53938a06b3e1989",
+    "measurements_sha256": "e907f3d11cd22fa9e297b1d616026531bdbf1e1cbd2a400edac04e2b17c34932",
+    "delivered": 16,
+    "scenarios": 32
+  },
+  "held_out": {
+    "fingerprint": "8069a4d0b072a74a7d262a7fe4233b4c029a09f8a99d7a6d3046b5c8523dafea",
+    "measurements_sha256": "6c08ea97f522dfe8f5823ace2ef8c43be52ddfdf766dcfbb8189f7506d27915c",
+    "delivered": 30,
+    "scenarios": 64
+  },
+  "observation_sha256_9_digits": {
+    "step 0": "e2c01e4110d756b0cfa874ef76b15b3970d437363bce024f7ac4a065b2980e65",
+    "step 49": "55a8f2d8ee8a04e2860a5b4e221bbeaaa1ea258db21dd4be149d8eb20f2fdef8"
+  }
+}
