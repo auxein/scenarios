@@ -40,18 +40,21 @@ def tolerance(backend: Backend) -> float:
 
 
 def test_the_layout_is_defined_once_with_its_sizes() -> None:
-    assert LAYOUT.size == 43
+    assert LAYOUT.size == 45
     assert {name: g.stop - g.start for name, g in LAYOUT.groups.items()} == {
         "target": 3,
         "rays": 24,
-        "box": 6,
+        "box": 8,
         "teammates": 8,
         "proprioception": 2,
     }
     starts = [p.start for p in LAYOUT.parts.values()]
     stops = [p.stop for p in LAYOUT.parts.values()]
     assert starts[0] == 0 and starts[1:] == stops[:-1], "the parts tile the vector in order"
-    assert observation_layout(SensingParams(range=8.0)).size == 43, "the range scales distances, not the vector's size"
+    assert observation_layout(SensingParams(range=8.0)).size == 45, "the range scales distances, not the vector's size"
+    names = list(LAYOUT.parts)
+    assert names[names.index("box_heading") + 1] == "box_course", "the box cue's parts stay together"
+    assert LAYOUT["box_course"].stop - LAYOUT["box_course"].start == 2
 
 
 def test_target_distance_and_bearing_in_the_agents_frame(backend: Backend) -> None:
@@ -120,6 +123,52 @@ def test_box_cue_in_range_and_zeros_beyond(backend: Backend) -> None:
     far = layout_params([3.0, 0.0, 0.3], [-8.0, 8.0], [[8.5, -8.0, 1.0]])
     sensed, _ = senses(backend, [far])
     assert np.all(host(backend, sensed.observation)[0, 0, 0, LAYOUT.groups["box"]] == 0.0)
+
+
+# --- the box's course: where the box should go, as the agent sees it ---
+
+
+@pytest.mark.parametrize("heading", [0.0, math.pi / 2, math.pi, -math.pi / 2, 0.7, -2.4])
+def test_the_course_is_north_in_the_agents_frame(backend: Backend, heading: float) -> None:
+    """The box east of the agent, the target due north of the box: the course is north, turned into the agent's frame."""
+    layouts = [layout_params([3.0, 0.0, 0.0], [3.0, 7.0], [[0.0, 0.0, heading]])]
+    sensed, _ = senses(backend, layouts)
+    course = part(backend, sensed, "box_course")
+    np.testing.assert_allclose(course, [math.sin(math.pi / 2 - heading), math.cos(math.pi / 2 - heading)], atol=tolerance(backend))
+    if heading == 0.0:
+        np.testing.assert_allclose(course, [1.0, 0.0], atol=tolerance(backend))  # to the agent's left
+
+
+def test_rotating_the_agent_rotates_the_course_back(backend: Backend) -> None:
+    """Every agent around the box, each with its own heading: turning its reading back by its heading gives the same world
+    direction, the box's course, for all of them."""
+    headings = np.linspace(-math.pi, math.pi, 9)
+    agents = [[2.0 * math.cos(a), 2.0 * math.sin(a), float(h)] for a, h in zip(np.linspace(0.0, 6.0, 9), headings, strict=True)]
+    layouts = [layout_params([0.0, 0.0, 0.4], [-5.0, -4.0], agents)]
+    sensed, _ = senses(backend, layouts)
+    course = host(backend, sensed.observation)[0, 0, :, LAYOUT["box_course"]]
+    world = np.arctan2(course[:, 0], course[:, 1]) + headings
+    expected = math.atan2(-4.0, -5.0)
+    np.testing.assert_allclose(np.cos(world - expected), 1.0, atol=tolerance(backend))
+    np.testing.assert_allclose(np.hypot(course[:, 0], course[:, 1]), 1.0, atol=tolerance(backend))
+
+
+def test_the_course_is_zero_out_of_range(backend: Backend) -> None:
+    layouts = [layout_params([3.0, 0.0, 0.0], [3.0, 7.0], [[-4.0, 0.0, 0.0], [-1.0, 0.0, 0.0]])]
+    sensed, _ = senses(backend, layouts)
+    assert part(backend, sensed, "box_flag", 0)[0] == 0.0 and np.all(part(backend, sensed, "box_course", 0) == 0.0)
+    assert part(backend, sensed, "box_flag", 1)[0] == 1.0 and np.abs(part(backend, sensed, "box_course", 1)).max() > 0.5
+
+
+def test_the_course_is_zero_with_the_box_at_the_target(backend: Backend) -> None:
+    layouts = [layout_params([3.0, 2.0, 0.0], [3.0, 2.0], [[1.0, 0.0, 0.3]])]
+    sensed, _ = senses(backend, layouts)
+    observation = host(backend, sensed.observation)
+    assert np.all(np.isfinite(observation))
+    assert part(backend, sensed, "box_flag")[0] == 1.0 and np.all(part(backend, sensed, "box_course") == 0.0)
+    near = [layout_params([3.0, 2.0, 0.0], [3.0, 2.0 + 1e-9], [[1.0, 0.0, 0.3]])]
+    sensed, _ = senses(backend, near)
+    assert np.all(np.isfinite(host(backend, sensed.observation))) and np.all(part(backend, sensed, "box_course") == 0.0)
 
 
 @pytest.mark.parametrize("theta", [0.0, 0.4, 1.3, -2.0])
@@ -192,7 +241,7 @@ def test_every_value_within_its_range_on_random_states(backend: Backend) -> None
         box_angle=draw(-7.0, 7.0, shape[:2]),
     )
     observation = host(backend, sensors.observe(state, arrays, PARAMS))
-    assert observation.shape == (*shape, 43) and np.all(np.isfinite(observation))
+    assert observation.shape == (*shape, LAYOUT.size) and np.all(np.isfinite(observation))
     for name, (low, high) in LAYOUT.ranges.items():
         values = observation[..., LAYOUT[name]]
         assert values.min() >= low and values.max() <= high, name

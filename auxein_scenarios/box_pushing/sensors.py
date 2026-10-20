@@ -2,7 +2,7 @@
 
 **The observation layout is defined here, once** (`observation_layout`): the named parts of the vector, their slices and sizes,
 derived from the sensing parameters (`config.SensingParams`), and the range of values each part takes. Everything else (the
-environment, the senses-only controller, the overlay, the smoke test) reads it from here. With the defaults it has 43 values:
+environment, the senses-only controller, the brain files, the smoke test) reads it from here. With the defaults it has 45 values:
 
 | Part | Values | Range |
 |---|---|---|
@@ -14,9 +14,15 @@ environment, the senses-only controller, the overlay, the smoke test) reads it f
 | `box_distance` | the distance to the box's centre, over `r` (0 when out of range) | `[0, 1)` |
 | `box_bearing` | the bearing to the box's centre, `(sin, cos)` (0 when out of range) | `[-1, 1]` |
 | `box_heading` | the box's heading relative to the agent's, `(sin 2θ, cos 2θ)` (0 when out of range) | `[-1, 1]` |
+| `box_course` | the box-to-target direction relative to the agent's heading, `(sin, cos)` (0 out of range) | `[-1, 1]` |
 | `teammates` | per sector: `1 − e^(−x)`, `x = Σ (1 − d / r)` over the teammates within `r` in it | `[0, 1)` |
 | `speed` | the forward speed, over the maximum speed (clipped) | `[-1, 1]` |
 | `turn` | the turning rate, over the maximum turning rate (clipped) | `[-1, 1]` |
+
+**`box_course` adds no information**: it follows from the target's and the box's distances and bearings, by subtracting two
+vectors and normalising. It presents, as one sense, the way the box should go, which a small network does not easily compute: an
+agent pushes well from the box's far side from the target, and where that is depends on this direction. It is part of the box
+cue, on only while the box is in range.
 
 Bearings are angles from the agent's heading, counter-clockwise positive. Ray `k` points at `2πk / rays` from the heading (ray 0
 straight ahead); sector `k` is centred on `2πk / sectors` (sector 0 straight ahead). Rays start at the agent's centre, ignore
@@ -44,7 +50,21 @@ from auxein_scenarios.box_pushing.config import SensingParams, WorldParams
 from auxein_scenarios.box_pushing.world import Layout, State
 from auxein_scenarios.common.geometry import ray_aabb, ray_circle, ray_inside_aabb, ray_obb, to_frame
 
-__all__ = ["HIT_BOX", "HIT_NOTHING", "HIT_OBSTACLE", "ObservationLayout", "Senses", "observation_layout", "observe", "sense"]
+__all__ = [
+    "COURSE_EPSILON",
+    "HIT_BOX",
+    "HIT_NOTHING",
+    "HIT_OBSTACLE",
+    "ObservationLayout",
+    "Senses",
+    "observation_layout",
+    "observe",
+    "sense",
+]
+
+COURSE_EPSILON = 1e-6
+"""Below this distance (units) between the box's centre and the target's, the box's course is undefined and sensed as 0; the
+episode is delivered long before, at the target zone's edge."""
 
 HIT_NOTHING, HIT_OBSTACLE, HIT_BOX = 0, 1, 2
 """What a ray hit first, in `Senses.ray_hit`: nothing within range, a wall or an obstacle, the box."""
@@ -71,7 +91,7 @@ class ObservationLayout:
         return {
             "target": slice(p["target_distance"].start, p["target_bearing"].stop),
             "rays": slice(p["ray_distance"].start, p["ray_box"].stop),
-            "box": slice(p["box_flag"].start, p["box_heading"].stop),
+            "box": slice(p["box_flag"].start, p["box_course"].stop),
             "teammates": p["teammates"],
             "proprioception": slice(p["speed"].start, p["turn"].stop),
         }
@@ -82,7 +102,7 @@ class ObservationLayout:
 
 @cache
 def observation_layout(sensing: SensingParams | None = None) -> ObservationLayout:
-    """The observation layout for these sensing parameters (the defaults: 43 values)."""
+    """The observation layout for these sensing parameters (the defaults: 45 values)."""
     sensing = sensing or SensingParams()
     sizes = {
         "target_distance": (1, (0.0, 1.0)),
@@ -93,6 +113,7 @@ def observation_layout(sensing: SensingParams | None = None) -> ObservationLayou
         "box_distance": (1, (0.0, 1.0)),
         "box_bearing": (2, (-1.0, 1.0)),
         "box_heading": (2, (-1.0, 1.0)),
+        "box_course": (2, (-1.0, 1.0)),
         "teammates": (sensing.sectors, (0.0, 1.0)),
         "speed": (1, (-1.0, 1.0)),
         "turn": (1, (-1.0, 1.0)),
@@ -107,7 +128,7 @@ def observation_layout(sensing: SensingParams | None = None) -> ObservationLayou
 
 @dataclass(frozen=True)
 class Senses:
-    """What the agents sensed in one state: the observation, and the intermediate quantities the overlay draws.
+    """What the agents sensed in one state: the observation, and intermediate quantities for tests and drawing.
 
     Shapes: `n` candidates, `s` scenarios, `N` agents, `R` rays, `S` sectors."""
 
@@ -124,6 +145,9 @@ class Senses:
     """`(n, s, N, N)`: the sector of teammate `j` around agent `i` (as a float index; meaningful where the weight is above 0)."""
     sector_sum: Array
     """`(n, s, N, S)`: the closeness-weighted count per sector, `x`, before squashing."""
+    course_x: Array
+    """`(n, s)`: the unit direction from the box's centre to the target's, in the world's frame (0 when they coincide)."""
+    course_y: Array
 
 
 def _ray_directions(sensing: SensingParams) -> tuple[np.ndarray, np.ndarray]:
@@ -190,6 +214,16 @@ def sense(state: State, layout: Layout, params: WorldParams, sensing: SensingPar
         xp.where(on, xp.cos(relative), 0.0),
     ]
 
+    # the box's course: from its centre to the target's, the same for every agent, turned into each agent's frame
+    gx, gy = layout.target_x - state.box_x, layout.target_y - state.box_y  # (n, s)
+    length = xp.sqrt(gx * gx + gy * gy)
+    defined = length > COURSE_EPSILON
+    safe = xp.where(defined, length, 1.0)
+    course_x, course_y = xp.where(defined, gx / safe, 0.0), xp.where(defined, gy / safe, 0.0)
+    ux, uy = course_x[..., None], course_y[..., None]
+    steer = on & defined[..., None]
+    box += [xp.where(steer, uy * c - ux * s, 0.0), xp.where(steer, ux * c + uy * s, 0.0)]
+
     # teammates: the pairwise distances once, then closeness weights summed per sector
     agents = int(x.shape[-1])
     px, py = x[..., None, :] - x[..., :, None], y[..., None, :] - y[..., :, None]  # teammate j relative to agent i
@@ -220,6 +254,8 @@ def sense(state: State, layout: Layout, params: WorldParams, sensing: SensingPar
         teammate_weight=weight,
         teammate_sector=sector,
         sector_sum=sums,
+        course_x=course_x,
+        course_y=course_y,
     )
 
 
