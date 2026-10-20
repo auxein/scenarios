@@ -1,0 +1,11 @@
+{
+  "about": "A smoke run of the config below, pinned with the box's course sensed (45 inputs), so that a change of these numbers is a change of behaviour: a refactor must keep them. The event log's digest is exact on the machine type it was pinned on (macOS arm64): elsewhere the last bit of a float depends on the platform's libm and the SIMD kernels numpy picks for the CPU. The evaluations' digest, every number to 9 significant digits, holds everywhere.",
+  "config": "name = \"pin\"\n[world.simulation]\nmax_steps = 200\n[team]\nagents = 10\n[scenarios]\neasy = 2\nfull = 2\nheld_out = 4\nseed = 1\n[evolution]\npopulation = 10\ngenerations = 4\n[run]\nbackend = \"numpy\"\ndevice = \"cpu\"\nprecision = \"float64\"\n",
+  "event_log_sha256": {
+    "darwin-arm64": "e3eace837cfd44ba723bbf4171ded4b00378ebd81a42645f26d3fd0133712da5"
+  },
+  "evaluations_sha256_9_digits": "8981639cbbec3180e4c496e7f8a131ad2b05f026865b24377a2f8a63e16e6814",
+  "generations": 4,
+  "final_best_candidate": 25,
+  "final_best_score": 0.06667259191180244
+}

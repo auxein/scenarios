@@ -131,7 +131,7 @@ M1a builds the physics as a pure, batched core in `world.py`, separate from Auxe
 - **No randomness** (§4.1): `rng` is accepted, as the interfaces require, and unused; a test checks that two streams give the same numbers.
 - **The layout cache.** The padded `Layout` of a scenario sequence is built once and kept (the four most recent) by the scenarios' fingerprint (ids, seeds and params, as `ScenarioSet` computes it) and the backend. Not by ids alone: two training sets of different seeds share their ids (`train-0000`...).
 - **Failures.** After every step, a scenario whose state is no longer finite (a physics blow-up, or a policy returning NaN) is **frozen at its last finite state** and marked done, so it cannot poison the rest of the batch or delay the early stop; `run_batch` reports it in `EpisodeBatchResult.failures` as `FAILED`, with an error naming the scenario and the step. Auxein then fails that candidate's evaluation (core design §6.6), records the episode, and the run goes on. Its measurements are finite but meaningless, and ignored.
-- **The brain**, `environment.brain(sensing, hidden=(32,))`: `MLPPolicy(43, (32,), 2, activation="tanh", output="tanh")`, its sizes from the observation layout (the smoke test takes them from there, M1b).
+- **The brain**, `environment.brain(sensing, hidden=(32,))`: `MLPPolicy(45, (32,), 2, activation="tanh", output="tanh")` (43 inputs before M2c), its sizes from the observation layout (the smoke test takes them from there, M1b).
 - **The checks it passes** (`tests/box_pushing/environment_test.py`, `auxein_test.py`): the six measurements as `(n, s)` arrays on the backend and device; the paths agree; the layout is built once for repeated calls; early stop; the M1a push team, driven through the loop, delivers what `simulate` delivers at the same step and to the same final distance; `max_pushers` and `approach` against hand-built scenes; a NaN action fails only its scenario, on both paths; a two-generation `auxein.run` with `RandomSearch`, a placeholder aggregator (defined in the tests only; the real one is M2's) and recording on completes, and every recorded episode holds the six measurements; the same genomes give the same measurements twice, a candidate gets the same alone as in a batch, and a scenario the same whatever its place in the set (bit for bit on numpy; within 1e-3 on torch float32, though they were identical on this machine's CPU). On numpy float64 and torch float32.
 
 ---
@@ -155,9 +155,9 @@ Distance to the target (normalised by the arena's diagonal) and bearing to it as
 
 Rays do not see teammates; teammates are sensed through sector densities (§3.4), so that a crowd around an agent does not blind it to the box.
 
-### 3.3 Box cue in range (6 values)
+### 3.3 Box cue in range (8 values)
 
-Within the sensing range `r` (5 units by default): a **flag** that the box is in range (1), the **distance** to the box's centre (normalised by `r`), the **bearing** to it `(sin, cos)`, and the **box's heading relative to the agent's** as `(sin 2θ, cos 2θ)`. The doubled angle because the box is symmetric under a half turn: `θ` and `θ + π` are the same situation, and `(sin θ, cos θ)` would give them different inputs that the network would have to learn to treat alike (decided at M1a, §10.6). Beyond `r`, all six are 0 and the flag is off. The box is also visible to rays beyond `r` only if the ray range is longer; with both at `r`, an agent farther than `r` from the box knows nothing of it (§10.1).
+Within the sensing range `r` (5 units by default): a **flag** that the box is in range (1), the **distance** to the box's centre (normalised by `r`), the **bearing** to it `(sin, cos)`, and the **box's heading relative to the agent's** as `(sin 2θ, cos 2θ)`. The doubled angle because the box is symmetric under a half turn: `θ` and `θ + π` are the same situation, and `(sin θ, cos θ)` would give them different inputs that the network would have to learn to treat alike (decided at M1a, §10.6). And (since M2c, §3.9) the **box's course**: the direction from the box's centre to the target's, relative to the agent's heading, as `(sin, cos)`: the way the box should go, as the agent sees it; 0 when the box's centre is at the target (an epsilon of 10⁻⁶ units: the episode is delivered long before). Beyond `r`, all eight are 0 and the flag is off. The box is also visible to rays beyond `r` only if the ray range is longer; with both at `r`, an agent farther than `r` from the box knows nothing of it (§10.1).
 
 ### 3.4 Teammates: sector densities (8 values)
 
@@ -171,7 +171,7 @@ The agent's own forward speed and turning rate, each normalised by its maximum.
 
 - **No signalling** between agents in v1: they coordinate only through what they sense of each other and of the box. Signals (an output broadcast to neighbours) are a v2 idea.
 - **Actions:** two outputs in `[-1, 1]`, from `MLPPolicy` in `"tanh"` output mode: forward thrust and turning, scaled to the agent's limits (§2.5).
-- **One genome is one network, and that network is the whole team's brain.** The brain is one `MLPPolicy` shared by all agents (parameter sharing): every agent runs its own copy with identical weights, fed its own observations, so **agents act differently only because they sense differently**. Evolution selects teams, not individuals, so there is no credit assignment problem between agents, and the same brain works for any team size. This is exactly Auxein's batched path: `decode_batch` turns the `(n, d)` genome array into `n` networks, and `act_batch` takes the observations `(n, s, N, 43)` and returns the actions `(n, s, N, 2)` as batched matrix products on the backend's device.
+- **One genome is one network, and that network is the whole team's brain.** The brain is one `MLPPolicy` shared by all agents (parameter sharing): every agent runs its own copy with identical weights, fed its own observations, so **agents act differently only because they sense differently**. Evolution selects teams, not individuals, so there is no credit assignment problem between agents, and the same brain works for any team size. This is exactly Auxein's batched path: `decode_batch` turns the `(n, d)` genome array into `n` networks, and `act_batch` takes the observations `(n, s, N, 45)` and returns the actions `(n, s, N, 2)` as batched matrix products on the backend's device.
 - **The network:** one hidden layer of 32 `tanh` units by default, feed-forward, **no memory**. Recurrent brains are the first fallback if searching for the box proves too hard for a memoryless brain (§10.1); Auxein has no recurrent decoder (core design §15), so that would be a request to Auxein or a decoder here.
 - **Future options:** heterogeneous teams (per-agent weights; the genome grows with the team) and castes (a few networks, each agent assigned to one).
 
@@ -181,12 +181,12 @@ The agent's own forward speed and turning rate, each normalised by its maximum.
 |---|---|
 | target: distance, bearing (sin, cos) | 3 |
 | range rays: 12 × (distance, hit the box) | 24 |
-| box cue: flag, distance, bearing (sin, cos), relative heading (sin 2θ, cos 2θ) | 6 |
+| box cue: flag, distance, bearing (sin, cos), relative heading (sin 2θ, cos 2θ), course (sin, cos) | 8 |
 | teammates: 8 sector densities, squashed | 8 |
 | proprioception: forward speed, turning rate | 2 |
-| **observation size** | **43** |
+| **observation size** | **45** (43 before M2c) |
 
-With one hidden layer of 32 units and 2 outputs, the genome is `43 × 32 + 32` (hidden layer) `+ 32 × 2 + 2` (output layer) = **1,474 weights** (`MLPPolicy(43, (32,), 2, output="tanh").dim`; checked by the scaffold's smoke test). It is laid out as Auxein's `MLPPolicy` lays it out (core design §6.2), and searched in `policy.space(scale)`, whose fan-in–scaled bounds make the GA's uniform first generation a Glorot-like initialisation.
+With one hidden layer of 32 units and 2 outputs, the genome is `45 × 32 + 32` (hidden layer) `+ 32 × 2 + 2` (output layer) = **1,538 weights** (1,474 before M2c; `MLPPolicy(45, (32,), 2, output="tanh").dim`, its sizes taken from the layout by the smoke test and the brain tests). It is laid out as Auxein's `MLPPolicy` lays it out (core design §6.2), and searched in `policy.space(scale)`, whose fan-in–scaled bounds make the GA's uniform first generation a Glorot-like initialisation.
 
 ### 3.8 Sensing as built (M1b)
 
@@ -202,17 +202,45 @@ With one hidden layer of 32 units and 2 outputs, the genome is `43 × 32 + 32` (
 | `box_distance` | 28 | the distance to the box's centre over `r` | `[0, 1)` |
 | `box_bearing` | 29–30 | `(sin, cos)` of the bearing to the box's centre | `[-1, 1]` |
 | `box_heading` | 31–32 | `(sin 2θ, cos 2θ)`, `θ` the box's heading less the agent's | `[-1, 1]` |
-| `teammates` | 33–40 | per sector, `1 − e^(−x)`, `x = Σ (1 − d / r)` over the teammates within `r` in it | `[0, 1)` |
-| `speed` | 41 | forward speed over the maximum speed, clipped | `[-1, 1]` |
-| `turn` | 42 | turning rate over the maximum turning rate, clipped | `[-1, 1]` |
+| `box_course` | 33–34 | `(sin, cos)` of the direction from the box's centre to the target's, relative to the agent's heading (M2c, §3.9) | `[-1, 1]` |
+| `teammates` | 35–42 | per sector, `1 − e^(−x)`, `x = Σ (1 − d / r)` over the teammates within `r` in it | `[0, 1)` |
+| `speed` | 43 | forward speed over the maximum speed, clipped | `[-1, 1]` |
+| `turn` | 44 | turning rate over the maximum turning rate, clipped | `[-1, 1]` |
 
-The box cue's five values after the flag are 0 when the box is out of range. Details the design left open, decided at M1b:
+The box cue's seven values after the flag are 0 when the box is out of range. Details the design left open, decided at M1b:
 
 - **Frames.** Bearings are counter-clockwise from the heading. Ray `k` points at `2πk / 12` (ray 0 straight ahead); sector `k` is centred on `2πk / 8` (sector 0 straight ahead, each 45° wide).
 - **Rays start at the agent's centre** (an agent touching a wall reads 0.05) and **report 0 from inside a shape** (an agent pressed slightly into an obstacle). They are cast by the slab method against the arena (from inside), the axis-aligned rectangles and the box (in its frame), and by the quadratic against circles (`geometry.ray_*`, M1b); a ray grazing an edge, a corner or a circle hits it.
 - **Speed is clipped** to `[-1, 1]`: reverse thrust tops out at −0.5, but a contact can push an agent faster than its top speed for a moment.
 - **Cost.** The rays are `(n, s, N, 12)` arrays, cast slot by slot against the padded obstacles (an exact minimum, so padding does not change a reading); the teammates are `(n, s, N, N)` arrays: **pairwise distances once per step**, shared by the weights and the sectors, summed per sector in a loop over the 8 sectors (rather than a one-hot `(n, s, N, N, 8)` array, eight times the memory). Sensing costs more than the physics (§10.3).
 - **What the tests pin** (`tests/box_pushing/sensors_test.py`, on numpy float64 and float32 and torch float32): the bearing to the target in the agent's frame, rotating back as the agent turns; rays hitting a wall, an obstacle and the box with the right flag, an obstacle hiding the box, nothing in range reading 1; the box cue on within `r` and all zeros beyond; the relative heading identical for the box at `θ` and `θ + π`; one teammate 0.5 ahead reading 0.59 in sector 0, a crowd of ten above 0.99, an agent never sensing itself, sectors turning with the agent; proprioception normalised; every value within its range on random states; an agent's observation independent of the batch and of the obstacle padding (bit for bit on numpy). The ray casts have their own hand-computed tests (`tests/common/geometry_test.py`).
+
+### 3.9 The box's course (M2c)
+
+**Why.** The second overnight run's champion rings the box on all sides (§10.9): agents on the leading side push against the
+travel, the box creeps at half the hand-written controller's speed, and no long push is delivered. To push well an agent must
+stand on the box's far side from the target. Until M2c it sensed two directions from itself, to the target (§3.1) and to the
+box's centre (§3.3); the box-to-target direction is their difference, normalised, which a network of 32 `tanh` units evidently
+did not learn to compute. **`box_course` presents it as a sense: what the box should do, as the agent sees it.** Whether to
+stand behind the box and push stays for evolution to discover.
+
+**Presented, not new information.** It is computable from the target's distance and bearing and the box's distance and
+bearing, so it adds nothing an agent could not know; it puts it in a form the network can use. It is part of the box cue, on
+only while the box is within `r`, like the rest of the cue, right after `box_heading` so the cue's parts stay together. It is
+code, not a config option: the layout is code, and a brain file records it (§7.1), so **brains trained before M2c are refused**
+by `load_brain` (their layout has no `box_course`).
+
+**One lever.** Nothing else changed: not the fitness, the physics, the brain's size, the GA, the scenarios or the step limit,
+so the next run says what this sense alone does. **The senses-only controller is unchanged**: it reads the observation by part
+names, so the new part does not move what it reads; it keeps rebuilding the same direction by hand, since switching it to the
+new part would change its last bits and its numbers are the baseline every run is judged against. A test pins, from `main`
+before M2c, its observation without `box_course` (every platform) and its measurements on the default training set (16 of 32
+delivered) and held-out seed 2 (30 of 64 on numpy float64; 31 on Metal float32), bit for bit on macOS arm64.
+
+**The tests** (`sensors_test.py`): the box east of the agent and the target north of the box reads north in the agent's frame
+for six headings; agents around the box, each with its own heading, all sense the same world direction once turned back; zeros
+out of range with the flag off; zeros and no NaN with the box at the target (or within 10⁻⁹ of it); and, with the existing
+tests, every value within `[-1, 1]` on random states and the observation independent of the batch and the padding.
 
 ---
 
@@ -372,7 +400,7 @@ A run saves its brains as **`.safetensors`** files (the `safetensors` package's 
 - **Tensors:** the network's layers, `layers.<i>.weight` `(out, in)` and `layers.<i>.bias` `(out,)`, from the input side, **in the run's precision**: exactly the `MLPPolicy` genome, per layer its weights row by row then its biases, so loading rebuilds the genome **bit for bit** (a float32 run's genomes are float32 values; saving refuses a genome its precision cannot hold). Any safetensors reader sees a plain network. A brain of the default sizes is about 8 KB in float32.
 - **Metadata** (safetensors' string-to-string header, each value JSON):
   - `format`: `"auxein-scenarios/box-pushing/brain/1"`, and `scenario`: `"box-pushing"`;
-  - `brain`: the spec (observation size 43, hidden widths, 2 outputs, `tanh` activation and output);
+  - `brain`: the spec (observation size 45, hidden widths, 2 outputs, `tanh` activation and output);
   - `observation_layout`: the observation's parts in order, `[[name, size], …]` (`sensors.observation_layout`): a brain reads its inputs by position;
   - `sensing` (range, rays, sectors), `world` (every `WorldParams` section) and `team` (agents): what it was trained in, so it runs in its own world wherever it is deployed;
   - `provenance`: the run (its config's name, its directory, its seed, its scenario sets with both seeds), the generation and candidate, whether it is the final brain, its training score and success, the fitness weights, the Auxein and scenarios versions, the scenarios commit (with `+dirty` for uncommitted changes, when run from a checkout) and the creation time.
@@ -402,6 +430,7 @@ A run saves its brains as **`.safetensors`** files (the `safetensors` package's 
   - **Depth:** the floor is lit faintly at its centre and dithered so that the shallow gradient does not band.
   - **No branding** in the videos.
 - **Rendered offline** from a trajectory recorded by the same step loop that scores an episode (`BoxPushingWorld.watch`), so a video shows exactly what the physics computed. Each panel is its own trajectory's cell (`render.Panel`), so brains of different worlds and team sizes share a video.
+- **The box's course** (M2c, §3.9): every panel draws a short silver arrow from just outside the box toward the target while at least one agent has the box within its sensing range, and not after delivery: the direction the agents in range sense as `box_course` (each in its own frame; drawn once, in the world's). It replaces what decision 4 of M2c asked of the sensing overlay, which R1 removed; agents out of range sense nothing of it, and the arrow goes away when none is near.
 - **Format:** MP4 (H.264, yuv420p), drawn with matplotlib and encoded by ffmpeg from the `imageio-ffmpeg` wheel, so no system ffmpeg is needed and `uv sync` alone is enough on a Mac and in CI. Charts: PNG and SVG, series told apart by brightness and dash, labelled at their ends (`common/charts.py`).
 - **The checks** (`deploy_test.py`, `brain_test.py`, `render_test.py`): one brain and three brains deployed, a fresh seed disjoint from the training and held-out sets, `--agents` changing the team, the baselines present, the three files correct and parsing, the video's panels and captions (the text drawn in a few frames, `common.rendering.drawn_text`), `--no-video`, and deployment on the held-out seed equal to `evaluate_held_out`; brains round-tripping bit for bit in float32 and float64, their metadata, the refusals, and their size.
 
@@ -471,7 +500,12 @@ docs/auxein-issues.md     # the log of Auxein bugs and requests found here
   - **The owner's second overnight run** (done): `configs/full.toml` (generator 2, 4 + 28), 400 generations, 6.2 hours (§10.9). Better data closed the generalisation gap (+0.24 to +0.06) and ended the wall-hugging, but the champion delivers 41 % of its held-out scenarios, below half and below the first champion's 47 % on the same layouts; it stopped improving at generation 288.
 - **M3** (done): milestones, the held-out report with two baselines and a recommendation, milestone clips with honest labels, the sequence and grid montages, the charts, and a command making them all (§7, as it was then); run on the overnight run (§10.8). R1 replaced its commands with `train`'s brains, held-out results and charts and `deploy`'s video.
 - **R1** (done): **pruned to two verbs before the next experiment**: `scenarios box-pushing train` (the run, its brains, its held-out results, its charts) and `scenarios box-pushing deploy` (brains on scenarios they have not seen: results and one video), brains as safetensors files, a smaller config, one generator, a shared entry point for every scenario, and code that stands on its own (§6.1, §7, §8). Behaviour unchanged: a run trains to the same numbers as before (decision 9, pinned from `main`).
-- **Next: the time-bonus weight for the push** (`[fitness] time`, `w_t`, §5.1), on the new CLI: a pilot with a larger weight, then a full run, its snapshot brains deployed together. Not M4 yet: the second run's champion rings the box and pushes at half the hand-written controller's speed, and delivers none of the long pushes (§10.9). One lever at a time; the sensing range for the search is no longer indicated (every layout is reached). The overnight runs predate R1 and are dropped, but their numbers stay comparable: a run with the default `scenarios.seed = 1` has held-out seed 2, the very 64 layouts both overnight champions were compared on (§10.9), so `deploy --seed 2` of a new brain is judged against the same 41 % and 47 %.
+- **M2c** (done, code): **a new sense, the box's course** (§3.9): the direction from the box's centre to the target's in each agent's frame, part of the box cue; 45 inputs, 1,538 weights; nothing else changed, and the controller's numbers are pinned unchanged. M2c chose this lever before the time-bonus weight that §10.9 had suggested: the ring around the box is about where agents stand, which they could not easily sense, before it is about how fast they are paid to deliver. Its pilot is in §10.11.
+- **The owner's third overnight run**, next: `configs/full.toml` with the new sense, then `deploy --seed 2` of its final brain on the 64 layouts of §10.9 (41 %, 47 %, the controller's 48 %), its snapshots together for the before-and-after video, and `--agents 20` and `100`. **What decides the step after** (decided at M2c):
+  - **at least half of the 64 held-out layouts delivered, and the team lines up behind the box** (the video): M4;
+  - **still a ring, or below half**: an overnight run with `[brain] hidden = [32, 32]` and the same sense, a config change and no code: comparing two directions is a product, which a second layer represents far more easily than one;
+  - **neither works**: give the agents their angle around the box relative to the push line (where they stand relative to "directly behind"), a more engineered sense, the last resort.
+  The time-bonus weight (§5.1, §10.9) stays a lever for later, one at a time.
 - **M4:** the CMA-ES comparison and polished clips for the website, once a retrained run generalises (at least half of the held-out scenarios delivered; the second overnight run delivers 41 %, §10.9).
 
 ---
@@ -618,7 +652,7 @@ Details this design needed but was not first given. **Items 1–10 and 14 were d
 10. **Decided.** Full-difficulty box–target distance 6–12 units, **the training mix** 8 easy + 24 full, **64 held-out scenarios**, **target zone radius** 1.5 (§4).
 11. **Decided at M2a.** Progress is clipped at −1; the approach term (the mean over agents of `1 − min(1, g / r)`, with `g` the closest gap to the box, §5.2) counts at weight 0.1 for the whole run and does not fade (an aggregator is fixed for a run; a staged run could fade it later). A team that only gathers scores at most 0.1, less than one whose push has got going, but more than one that only nudges the box while half of it hangs back (§5.3).
 12. **Decided at M1b.** `max_pushers` is a recorded measurement (§5.2), for the "cooperation emerging" chart: cheap, and built. It counts agents touching the box, not agents pushing through a queue.
-13. **Open (M4).** CMA-ES at 1,474 dimensions (§6): full-covariance CMA-ES learns its covariance at a rate of about `1/d²`, so in a few hundred generations it barely adapts it, and its `O(d²)` state and eigendecompositions run on the host. The separable variant (pycma's `CMA_diagonal` option, through `PycmaStrategy(options=...)`) is the fairer comparison. `PycmaStrategy` writes no checkpoints, so a resumed comparison run replays from its start.
+13. **Open (M4).** CMA-ES at 1,474 dimensions (1,538 since M2c) (§6): full-covariance CMA-ES learns its covariance at a rate of about `1/d²`, so in a few hundred generations it barely adapts it, and its `O(d²)` state and eigendecompositions run on the host. The separable variant (pycma's `CMA_diagonal` option, through `PycmaStrategy(options=...)`) is the fairer comparison. `PycmaStrategy` writes no checkpoints, so a resumed comparison run replays from its start.
 14. **Decided.** `contacts.py` and `config.py` as modules (§8); M1a also added `scripted.py` and `demos.py`.
 
 ### 10.7 Pilot run (M2a)
@@ -888,3 +922,48 @@ setup would not get there: the change has to be in what is rewarded.
 - **An interrupted run that is never resumed has no `held_out.csv` or charts**, only its `final.safetensors`: the held-out judging takes minutes, too long for Ctrl-C. Resuming it, even with no generation to add, writes them.
 - **On a GPU, a deployment's video can differ a little from its `results.csv`**: the video replays each brain on its first few scenarios in a smaller batch than the 64 judged, and float32 on Metal depends slightly on the batch's shape (§10.7). The video's captions are its own episodes' outcomes, so they never contradict what is shown; on numpy they match the CSV exactly.
 - **Brain files record the run's directory** (`provenance.run_dir`, an absolute path), useful to find the run again but a detail of the owner's machine in a file meant to be shared; the run's name is there too, so the path could be dropped.
+
+### 10.11 A sense of the box's course (M2c)
+
+M2c adds one sense, `box_course` (§3.9), and changes nothing else, so the next overnight run says what this sense alone does.
+
+**The pilot** (`configs/pilot.toml`: 4 + 28, 25 generations, Metal; `runs/pilot-m2c`) against M2b's pilot (§10.9), on the same
+training set: **23.5 minutes, 56 s per generation** (the same: two more inputs cost nothing measurable), a 40 MB recording.
+
+| generation | best so far (M2b → M2c) | generation's mean | champion's training success | mean `max_pushers` |
+|---:|---|---|---|---|
+| 1 | 0.079 → 0.050 | 0.026 → 0.025 | 0 % → 0 % | 1.6 → 1.2 |
+| 4 | 0.244 → 0.347 | 0.032 → 0.040 | 6 % → 9 % | 2.2 → 2.2 |
+| 9 | 0.365 → 0.347 | 0.053 → 0.043 | 9 % → 9 % | 3.4 → 2.6 |
+| 13 | 0.365 → 0.347 | 0.050 → 0.039 | 9 % → 9 % | 3.7 → 2.7 |
+| 25 | **0.648 → 0.459** | 0.065 → 0.062 | 16 % → 12 % | 3.5 → 3.1 |
+
+- **No early gain.** At generation 25 M2c's champion delivers all 4 easy scenarios and **none of the 28 full ones** (M2b's: 1),
+  with a mean full progress of +0.04 (M2b's: +0.15); its best score sat at 0.347 from generation 4 to 24. The population's mean
+  score and cooperation rise at about M2b's pace, a little lower.
+- **What 25 generations can say is little.** The genome is longer (1,538), so the first generation's random brains are other
+  brains, and a pilot is one seed: the curves are not paired, and both champions improve in a few jumps. The pilot checks that
+  training runs and learns with the new sense; the overnight run is the test.
+
+**The pilot's final brain on the comparison layouts** (`deploy runs/pilot-m2c/brains/final.safetensors --seed 2`: the 64 held-out
+layouts of §10.9, Metal, 2 minutes with the video):
+
+| | delivered | progress | `max_pushers` | delivery step (median) | 6–8 units | 8–10 | 10–12 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| M2c pilot, generation 25 | 0/64 | +0.03 | 4.5 | | 0/24 | 0/22 | 0/18 |
+| *senses-only controller* | 31/64 (48 %) | +0.65 | 3.3 | 392 | 15/24 | 8/22 | 8/18 |
+| for reference (§10.9): first overnight, second overnight | 30/64 (47 %), 26/64 (41 %) | +0.66, +0.56 | | 690, 746 | | | |
+
+The controller's 31 of 64 on Metal is §10.9's, as its pin says it must be. **The video**: the arrow from the box toward the target
+shows while agents are near it; in both scenarios shown, the two to four agents at the box are on its far side from the target,
+behind it with respect to the arrow, not around it, but too few to move it (four are needed), while others search, some in a
+row along the top wall as in M2a's pilot. A hint at a line behind the box, from one young brain; not evidence.
+
+**The third overnight run** (`configs/full.toml` with the new sense, 400 generations): *to be filled in a docs-only follow-up once
+the owner has run it*:
+
+- its `held_out.csv` and charts, and `deploy runs/full-<ts>/brains/final.safetensors --seed 2` against 41 %, 47 % and the
+  controller's 48 %, with success by distance (no long push was delivered by the second run);
+- the video of its snapshots together: **does the team line up behind the box, or still ring it?**;
+- `--agents 20` and `--agents 100` on its final brain;
+- the decision (§9): M4, `[brain] hidden = [32, 32]`, or the engineered sense.

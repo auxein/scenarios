@@ -343,12 +343,8 @@ def _video(deployment: Deployment, k: int, backend: Backend) -> Path:
         trajectory, row, measured = cells[i]
         for j, scenario in enumerate(list(d.scenarios)[:k]):
             m = {name: float(values[row, j]) for name, values in measured.items()}
-            outcome = _outcome(m)
-            panels.append(
-                Panel(
-                    trajectory, row, j, scenario.params, d.world.params, d.name, f"{scenario.id} · {scenario.params['difficulty']}", outcome
-                )
-            )
+            note = f"{scenario.id} · {scenario.params['difficulty']}"
+            panels.append(Panel(trajectory, row, j, scenario.params, d.world.params, d.name, note, _outcome(m), d.world.sensing.range))
     o = deployment.options
     n = len(deployment.brains)
     return render_panels(
@@ -357,6 +353,7 @@ def _video(deployment: Deployment, k: int, backend: Backend) -> Path:
         kicker=f"Deployment · {n} brain{'s' if n != 1 else ''} · seed {o['seed']}",
         title=f"{n} brain{'s' if n != 1 else ''} on {k} new scenario{'s' if k != 1 else ''}",
         subtitle=f"A row per brain, each in the world it was trained in, on the first {k} of the {o['scenarios']} scenarios "
-        "deployed (not chosen for how they went). Bright agents touch the box; the box lights up while it moves.",
+        "deployed (not chosen for how they went). Bright agents touch the box; the box lights up while it moves; the arrow "
+        "is the way the box should go, which agents within sensing range of it sense.",
         columns=k,
     )

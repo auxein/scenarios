@@ -11,6 +11,8 @@ light headline, a muted lead saying what to look for) above its panels, each:
   (its heading);
 - the agents as silver chevrons along their heading, inside a faint outline of their disc, bright white while they touch the
   box; agents within `LINK_RANGE` of each other joined by faint lines;
+- the box's course, what the agents sense as `box_course`: a short arrow from the box toward the target, drawn while at least one
+  agent has the box within its sensing range (the agents in range all sense this one direction, each in its own frame);
 - a corner caption (what the panel shows, the step and simulated time, the box's state: at rest, moving with how many agents
   touching it, or delivered), and a footer (a note, and how the episode ended).
 
@@ -45,13 +47,18 @@ from auxein_scenarios.common import theme
 from auxein_scenarios.common.geometry import obb_contact, obb_corners
 from auxein_scenarios.common.rendering import figure, frame_records, grid_shape, write_mp4
 
-__all__ = ["LINK_RANGE", "TOUCH_TOLERANCE", "Panel", "render_panels", "touching"]
+__all__ = ["COURSE_GID", "LINK_RANGE", "TOUCH_TOLERANCE", "Panel", "render_panels", "touching"]
 
 LINK_RANGE = 1.5
 """Agents closer than this (centre to centre, in units) are joined by a line, fainter as they are farther apart."""
 
 GUTTER = 0.12
 """Inches between panels and around them."""
+
+COURSE_GID = "box-course"
+"""The id of the course arrow's artists (its shaft and head), for tests that look for it without comparing pixels."""
+COURSE_LENGTH = 1.4
+"""The course arrow's length (units), from just outside the box's circumscribed circle."""
 
 
 def touching(trajectory: Trajectory, record: int, candidate: int, scenario: int, params: WorldParams) -> HostArray:
@@ -144,9 +151,17 @@ class _Panel:
         label: str,
         agents: int,
         size: float,
+        sensing_range: float | None = None,
     ) -> None:
-        self.ax, self.params, self.label = ax, params, label
+        self.ax, self.params, self.label, self.sensing_range = ax, params, label, sensing_range
+        self.target = cast("list[float]", layout["target"])
         self.target_fill = _draw_static(ax, layout, params)
+        colour = theme.rgba(theme.SILVER, 0.85)
+        self.course = Line2D([], [], linewidth=1.3, color=colour, solid_capstyle="round", zorder=4, visible=False, gid=COURSE_GID)
+        ax.add_line(self.course)
+        self.course_head = Polygon(np.zeros((3, 2)), closed=True, facecolor=colour, edgecolor="none", zorder=4, visible=False)
+        self.course_head.set_gid(COURSE_GID)
+        ax.add_patch(self.course_head)
         self.links = LineCollection([], linewidths=0.6, zorder=2)
         ax.add_collection(self.links)
         self.box = Polygon(np.zeros((4, 2)), closed=True, linewidth=1.4, zorder=3)
@@ -244,6 +259,7 @@ class _Panel:
         segments, colours = _links(x, y)
         self.links.set_segments(segments)
         self.links.set_color(colours)
+        self._course(bx, by, x, y, delivered)
 
         step = int(trajectory.step[t])
         readout = f"step {step:d}  ·  {step * dt:.1f} s"
@@ -253,6 +269,25 @@ class _Panel:
             self.caption(readout, f"moving · {int(np.sum(touch))} touching", True)
         else:
             self.caption(readout, f"at rest · {int(np.sum(touch))} touching", False)
+
+    def _course(self, bx: float, by: float, x: HostArray, y: HostArray, delivered: bool) -> None:
+        """The course arrow: shown while an agent has the box's centre within its sensing range, before delivery."""
+        gx, gy = self.target[0] - bx, self.target[1] - by
+        length = math.hypot(gx, gy)
+        sensed = self.sensing_range is not None and bool(np.any(np.hypot(x - bx, y - by) < self.sensing_range))
+        shown = sensed and not delivered and length > 1e-6
+        self.course.set_visible(shown)
+        self.course_head.set_visible(shown)
+        if not shown:
+            return
+        ux, uy = gx / length, gy / length
+        start = math.hypot(self.params.box.width, self.params.box.height) / 2.0 + 0.15
+        tip = start + COURSE_LENGTH
+        self.course.set_data([bx + start * ux, bx + (tip - 0.3) * ux], [by + start * uy, by + (tip - 0.3) * uy])
+        base_x, base_y, half = bx + (tip - 0.4) * ux, by + (tip - 0.4) * uy, 0.22
+        self.course_head.set_xy(
+            np.array([[bx + tip * ux, by + tip * uy], [base_x - half * uy, base_y + half * ux], [base_x + half * uy, base_y - half * ux]])
+        )
 
 
 def _header(fig: Figure, width: float, kicker: str, title: str, lead: str) -> None:
@@ -288,7 +323,8 @@ def _header_height(width: float, kicker: str, title: str, lead: str) -> float:
 @dataclass(frozen=True)
 class Panel:
     """One panel of a video: `candidate` on `scenario` (indices into `trajectory`'s batch), whose layout is `layout`, in the
-    world `params`; `label` heads it, and the footer says `note` and `outcome`."""
+    world `params`; `label` heads it, and the footer says `note` and `outcome`. With `sensing_range`, the box's course is drawn
+    while an agent is within it of the box."""
 
     trajectory: Trajectory
     candidate: int
@@ -298,6 +334,7 @@ class Panel:
     label: str
     note: str = ""
     outcome: str = ""
+    sensing_range: float | None = None
 
     @property
     def records(self) -> int:
@@ -340,7 +377,7 @@ def render_panels(
         bottom = height - header - (row + 1) * panel_size - row * GUTTER
         ax = fig.add_axes((left / width, bottom / height, panel_size / width, panel_size / height))
         agents = len(cast("list[object]", p.layout["agents"]))
-        panel = _Panel(ax, p.layout, p.params, p.label, agents, panel_size)
+        panel = _Panel(ax, p.layout, p.params, p.label, agents, panel_size, p.sensing_range)
         panel.footer(p.note, p.outcome)
         drawn.append(panel)
     longest = max(panels, key=lambda p: int(p.trajectory.step[p.records - 1]))

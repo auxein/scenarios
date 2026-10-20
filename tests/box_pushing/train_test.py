@@ -1,5 +1,5 @@
 """Training end to end on numpy (CI-sized, the `smoke` preset): what a run writes, interrupting and resuming, extending,
-refusing a changed run, Ctrl-C through the command line, and the same numbers as the code before brains and deploy."""
+refusing a changed run, Ctrl-C through the command line, and the same numbers as pinned."""
 
 import csv
 import hashlib
@@ -166,7 +166,9 @@ def test_extending_a_run_refreshes_its_brains_charts_and_held_out_results(tmp_pa
     assert brains(run_dir) == expected_brains(run_dir)
     final = load_brain(run_dir / BRAINS / FINAL).provenance
     assert final["generation"] == 6 and before["final"]["generation"] == 2
-    assert [int(r["generation"]) for r in rows(run_dir / HELD_OUT_FILE)][-1] == 6 != int(before["held"].splitlines()[-1].split(",")[0])
+    held = [int(r["generation"]) for r in rows(run_dir / HELD_OUT_FILE)]
+    assert held == [m.generation for m in find_snapshots(run_dir / RECORDING)], "every snapshot of the extended run"
+    assert held[-1] > int(before["held"].splitlines()[-1].split(",")[0]), "past the short run's last snapshot"
     assert (run_dir / "charts" / "fitness.png").stat().st_mtime_ns > chart
     with pytest.raises(ConfigError, match="already has 6"):
         train.resume(run_dir, generations=5, out=quiet, progress=False)
@@ -221,7 +223,7 @@ def test_ctrl_c_through_the_command_line(tmp_path: Path) -> None:
     assert resumed.evaluations_used == 10 * (told + 1)
 
 
-# --- the same numbers as before brains and deploy ---
+# --- the same numbers as pinned ---
 
 
 def _digest(recording: Path) -> str:
@@ -246,11 +248,11 @@ def _digest(recording: Path) -> str:
     return h.hexdigest()
 
 
-def test_the_same_numbers_as_before(tmp_path: Path) -> None:
-    """A smoke run pinned from the code before brains and deploy (`data/pre_r1_smoke.json`), trained again: the same
-    evaluations and final best on every platform, and the same event log bit for bit on the machine type it was pinned on
-    (elsewhere a float's last bit differs: libm, and the SIMD kernels numpy picks for the CPU)."""
-    pin = json.loads((DATA / "pre_r1_smoke.json").read_text())
+def test_the_same_numbers_as_pinned(tmp_path: Path) -> None:
+    """A smoke run pinned with the current behaviour (`data/smoke_pin.json`), trained again: the same evaluations and final best
+    on every platform, and the same event log bit for bit on the machine type it was pinned on (elsewhere a float's last bit
+    differs: libm, and the SIMD kernels numpy picks for the CPU). A refactor keeps these numbers; a change of behaviour re-pins."""
+    pin = json.loads((DATA / "smoke_pin.json").read_text())
     config = parse_config(pin["config"])
     run_dir = tmp_path / "pin"
     result = run(config, run_dir)
